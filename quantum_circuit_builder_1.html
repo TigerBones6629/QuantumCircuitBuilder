@@ -1,0 +1,934 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quantum Circuit Builder</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'JetBrains Mono','Fira Code','Consolas',monospace;
+  background: #080b14; color: #e2e8f0;
+  padding: 22px 24px; min-height: 100vh;
+}
+
+.eyebrow { font-size: 9px; color: #3b82f6; letter-spacing: 4px; text-transform: uppercase; margin-bottom: 4px; }
+.title   { font-size: 21px; font-weight: 800; letter-spacing: -.5px; margin-bottom: 4px; }
+.subtitle{ font-size: 10px; color: #475569; margin-bottom: 18px; }
+
+/* ── Toolbar ─────────────────────────────────────── */
+.toolbar {
+  background: #0d1426; border: 1px solid #1e2d5e; border-radius: 10px;
+  padding: 10px 14px; margin-bottom: 10px;
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+.gate-btn {
+  width: 40px; height: 34px; border-radius: 5px;
+  border: 2px solid #1e2d5e; background: transparent;
+  color: #475569; font-size: 12px; font-weight: 700;
+  cursor: grab; font-family: inherit; transition: all .12s;
+  user-select: none;
+}
+.gate-btn:active { cursor: grabbing; }
+.gate-btn.sel { box-shadow: 0 0 10px var(--gc)55; }
+.vdiv { width: 1px; height: 24px; background: #1e2d5e; margin: 0 3px; flex-shrink: 0; }
+.gate-name { font-size: 11px; font-weight: 600; min-width: 120px; }
+.rgroup { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.xs-lbl { font-size: 9px; color: #334155; flex-shrink: 0; }
+.sm-btn {
+  padding: 4px 9px; border-radius: 4px; border: 1px solid #1e2d5e;
+  background: transparent; color: #64748b; font-size: 10px;
+  cursor: pointer; font-family: inherit;
+}
+.sm-btn:hover { border-color: #3b82f644; color: #94a3b8; }
+.q-btn {
+  width: 26px; height: 26px; border-radius: 4px; border: 1px solid #1e2d5e;
+  background: transparent; color: #475569; font-size: 11px; font-weight: 600;
+  cursor: pointer; font-family: inherit;
+}
+.q-btn.on { border-color: #3b82f6; color: #3b82f6; background: #3b82f618; }
+
+/* ── Hints ───────────────────────────────────────── */
+.hint {
+  display: none; margin-bottom: 10px; padding: 7px 14px;
+  border-radius: 6px; font-size: 10px;
+}
+.hint.cnot  { background: #f9731610; border: 1px solid #f9731630; color: #f97316; }
+.hint.conn  { background: #7c3aed15; border: 1px solid #7c3aed44; color: #a78bfa; }
+
+/* ── Circuit ─────────────────────────────────────── */
+.circuit-wrap {
+  background: #0d1426; border: 1px solid #1e2d5e; border-radius: 12px;
+  padding: 18px 20px; margin-bottom: 12px; overflow-x: auto;
+}
+.step-row { display: flex; margin-left: 40px; margin-bottom: 10px; }
+.step-lbl { text-align: center; font-size: 8px; color: #1e3a5f; font-weight: 600; flex-shrink: 0; }
+.q-row    { display: flex; align-items: center; }
+.q-lbl    { width: 30px; font-size: 11px; font-weight: 700; color: #3b82f6; text-align: right; margin-right: 8px; flex-shrink: 0; }
+.wire-track { display: flex; align-items: center; position: relative; flex: 1; overflow: visible; }
+.wire-line  {
+  position: absolute; left: 0; right: 4px; height: 2px;
+  background: linear-gradient(90deg,#0f1f3d,#1d4ed844,#0f1f3d);
+  top: 50%; transform: translateY(-50%); z-index: 0; pointer-events: none;
+}
+.cell-wrap  { position: relative; flex-shrink: 0; z-index: 1; overflow: visible; }
+.cell {
+  width: 36px; height: 36px; border-radius: 6px;
+  border: 2px dashed #1e2d5e55; background: transparent; color: transparent;
+  font-size: 12px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  position: relative; z-index: 2; font-family: inherit;
+  transition: border-color .1s, background .1s, box-shadow .1s;
+  user-select: none;
+}
+/* Drop target hover */
+.cell.drop-ok   { border-color: #3b82f688 !important; border-style: solid !important; background: #3b82f618 !important; }
+.cell.drop-cnot { border-color: #f9731688 !important; border-style: solid !important; background: #f9731618 !important; }
+.cell.drop-bad  { border-color: #f43f5e33 !important; }
+
+/* Placed gates */
+.cell.placed { border-style: solid; cursor: grab; }
+.cell.placed:active { cursor: grabbing; }
+.cell.pending-ctrl { animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse {
+  0%,100% { box-shadow: 0 0 6px var(--gc)55; }
+  50%      { box-shadow: 0 0 16px var(--gc)99; }
+}
+
+/* CNOT vertical line */
+.cnot-vline {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  width: 2px; pointer-events: none; z-index: 1;
+}
+/* Same-column highlight when connecting CNOT */
+.cell.cnot-col-target { border-style: dashed !important; border-color: #f9731644 !important; background: #f9731608 !important; }
+
+.measure-sym { margin-left: 10px; font-size: 11px; color: #34d39966; flex-shrink: 0; }
+
+/* ── Trash zone ──────────────────────────────────── */
+/* pointer-events always on — browser locks drop targets at dragstart,
+   so hiding via pointer-events:none prevents drops on dynamically shown zones */
+.trash-zone {
+  display: flex; align-items: center; justify-content: center;
+  gap: 10px; border-radius: 8px;
+  border: 2px dashed #1e2d5e33; padding: 10px;
+  margin-bottom: 12px; font-size: 11px; color: #1e2d5e;
+  transition: all .2s; opacity: 1; pointer-events: all;
+}
+.trash-zone.visible { border-color: #f43f5e55; color: #475569; }
+.trash-zone.hover-trash { border-color: #f43f5e99; background: #f43f5e12; color: #f43f5e; }
+
+/* ── Hover × delete button ───────────────────────── */
+.cell-wrap:hover .del-btn { opacity: 1; }
+.del-btn {
+  position: absolute; top: -7px; right: -7px; z-index: 10;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: #0d1426; border: 1px solid #f43f5e88;
+  color: #f43f5e; font-size: 9px; font-weight: 900;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; opacity: 0; transition: opacity .15s;
+  pointer-events: all; user-select: none;
+}
+
+/* ── Probabilities ───────────────────────────────── */
+.prob-wrap {
+  background: #0d1426; border: 1px solid #1e2d5e; border-radius: 12px;
+  padding: 18px 20px;
+}
+.prob-head { font-size: 9px; color: #3b82f6; letter-spacing: 3px; text-transform: uppercase; margin-bottom: 14px; }
+.prob-row  { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.prob-lbl  { font-size: 11px; font-weight: 600; flex-shrink: 0; width: 56px; }
+.bar-bg    { flex: 1; height: 22px; background: #060a12; border-radius: 4px; overflow: hidden; position: relative; }
+.bar-fill  {
+  height: 100%; border-radius: 4px;
+  background: linear-gradient(90deg,#1d4ed8,#7c3aed);
+  transition: width .35s cubic-bezier(.4,0,.2,1);
+  display: flex; align-items: center; padding-left: 6px; box-sizing: border-box;
+}
+.bar-pct-in  { font-size: 9px; color: #fff; font-weight: 700; white-space: nowrap; }
+.bar-pct-out { position: absolute; left: 6px; top: 0; bottom: 0; display: flex; align-items: center; font-size: 9px; }
+.amp-val     { width: 158px; font-size: 9px; text-align: right; flex-shrink: 0; }
+.prob-footer {
+  margin-top: 14px; padding-top: 14px; border-top: 1px solid #0f1f3d;
+  font-size: 10px; color: #334155; display: flex; gap: 20px; flex-wrap: wrap;
+}
+
+/* ── Explanation ─────────────────────────────────── */
+.explain-wrap {
+  background: #0d1426; border: 1px solid #1e2d5e; border-radius: 12px;
+  padding: 18px 20px; margin-top: 12px;
+}
+.explain-head { font-size: 9px; color: #3b82f6; letter-spacing: 3px; text-transform: uppercase; margin-bottom: 14px; }
+.step-block   { margin-bottom: 13px; padding-left: 12px; border-left: 2px solid; }
+.step-block:last-child { margin-bottom: 0; }
+.step-title   { font-size: 11px; font-weight: 700; margin-bottom: 5px; }
+.step-body    { font-size: 10px; color: #64748b; line-height: 1.75; }
+.step-body em { color: #94a3b8; font-style: normal; }
+
+/* ── Bloch spheres ───────────────────────────────── */
+.bloch-wrap { background: #0d1426; border: 1px solid #1e2d5e; border-radius: 12px; padding: 18px 20px; margin-top: 12px; }
+.bloch-head { font-size: 9px; color: #3b82f6; letter-spacing: 3px; text-transform: uppercase; margin-bottom: 3px; }
+.bloch-sub  { font-size: 9px; color: #334155; margin-bottom: 16px; }
+.bloch-row  { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
+.bloch-item { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+.bloch-qlbl { font-size: 10px; font-weight: 700; color: #3b82f6; }
+.bloch-canvas { border-radius: 8px; cursor: grab; display: block; }
+.bloch-canvas:active { cursor: grabbing; }
+.bloch-coords { font-size: 9px; color: #334155; text-align: center; line-height: 1.7; font-family: inherit; }
+
+/* ── Ket notation display ────────────────────────── */
+.ket-line {
+  margin-top: 8px; padding: 7px 10px;
+  background: #060a12; border-radius: 4px; border: 1px solid #1e2d5e44;
+  font-size: 11px; color: #60a5fa; letter-spacing: 0.2px;
+  overflow-x: auto; white-space: nowrap;
+}
+.ket-line em { color: #94a3b8; font-style: normal; }
+</style>
+</head>
+<body>
+
+<div class="eyebrow">◆ Quantum Circuit Builder</div>
+<div class="title">Interactive Simulator</div>
+<div class="subtitle">Drag gates from the palette onto the circuit wires · Drag gates between cells to move them · Drag to the bin to delete</div>
+
+<div class="toolbar" id="toolbar"></div>
+<div class="hint cnot"  id="hintCnot"></div>
+<div class="hint conn"  id="hintConn"></div>
+
+<div class="circuit-wrap" id="circuitWrap"></div>
+<div class="trash-zone" id="trashZone" ondragover="trashOver(event)" ondragleave="trashLeave(event)" ondrop="trashDrop(event)">
+  🗑 Drop here to remove
+</div>
+<div class="prob-wrap"   id="probWrap"></div>
+<div class="explain-wrap" id="explainWrap"></div>
+<div class="bloch-wrap"   id="blochWrap"></div>
+
+<script>
+// ─── Dimensions ─────────────────────────────────
+const CSIZE=36, RGAP=16, RSTRIDE=CSIZE+RGAP, CGAP=8, STEPS=7;
+
+// ─── Gate definitions ────────────────────────────
+const GATE_INFO = {
+  H:    {label:'H',  color:'#3b82f6', title:'Hadamard', desc:'Creates superposition'},
+  X:    {label:'X',  color:'#f43f5e', title:'Pauli-X',  desc:'Quantum NOT gate'},
+  Y:    {label:'Y',  color:'#f59e0b', title:'Pauli-Y',  desc:'Y-axis rotation'},
+  Z:    {label:'Z',  color:'#10b981', title:'Pauli-Z',  desc:'Phase flip'},
+  S:    {label:'S',  color:'#06b6d4', title:'S Gate',   desc:'90° phase shift'},
+  T:    {label:'T',  color:'#8b5cf6', title:'T Gate',   desc:'45° phase shift'},
+  CNOT: {label:'CX', color:'#f97316', title:'CNOT',     desc:'Entangle two qubits'},
+};
+
+// ─── App state ───────────────────────────────────
+let nq      = 2;
+let circuit = {};       // "q-s" → { type, target?, control? }
+let selGate = 'H';
+let cnotPend= null;     // { q,s } pending CNOT control waiting for a target
+
+// Drag state
+let drag = null;
+/*
+  { mode:'palette',      gate:'H' }
+  { mode:'cell',         q, s }
+  { mode:'cnot-connect', q, s }   ← dragging from a pending CNOT control
+*/
+
+// ─── Complex math ────────────────────────────────
+const C=(re,im=0)=>({re,im});
+const cadd=(a,b)=>({re:a.re+b.re,im:a.im+b.im});
+const cmul=(a,b)=>({re:a.re*b.re-a.im*b.im,im:a.re*b.im+a.im*b.re});
+const S2=1/Math.sqrt(2);
+const MATS={
+  H:[[C(S2),C(S2)],[C(S2),C(-S2)]],
+  X:[[C(0),C(1)],[C(1),C(0)]],
+  Y:[[C(0),C(0,-1)],[C(0,1),C(0)]],
+  Z:[[C(1),C(0)],[C(0),C(-1)]],
+  S:[[C(1),C(0)],[C(0),C(0,1)]],
+  T:[[C(1),C(0)],[C(0),C(Math.cos(Math.PI/4),Math.sin(Math.PI/4))]],
+};
+function applyGate(sv,n,q,G){
+  const sz=1<<n,out=Array.from({length:sz},()=>C(0)),bit=n-1-q;
+  for(let i=0;i<sz;i++){
+    if((i>>bit)&1) continue;
+    const i0=i,i1=i|(1<<bit);
+    out[i0]=cadd(cmul(G[0][0],sv[i0]),cmul(G[0][1],sv[i1]));
+    out[i1]=cadd(cmul(G[1][0],sv[i0]),cmul(G[1][1],sv[i1]));
+  }
+  return out;
+}
+function applyCNOT(sv,n,ctrl,tgt){
+  const sz=1<<n,cb=n-1-ctrl,tb=n-1-tgt;
+  const out=Array.from({length:sz},()=>C(0));
+  for(let i=0;i<sz;i++) out[((i>>cb)&1)?i^(1<<tb):i]={...sv[i]};
+  return out;
+}
+function simulate(){
+  let sv=Array.from({length:1<<nq},(_,i)=>C(i===0?1:0));
+  for(let s=0;s<STEPS;s++){
+    const done=new Set();
+    for(let q=0;q<nq;q++){
+      const g=circuit[`${q}-${s}`];
+      if(g?.type==='CNOT_CONTROL'&&g.target!=null&&!done.has(q)){
+        sv=applyCNOT(sv,nq,q,g.target); done.add(q); done.add(g.target);
+      }
+    }
+    for(let q=0;q<nq;q++){
+      if(done.has(q)) continue;
+      const g=circuit[`${q}-${s}`];
+      if(g&&MATS[g.type]) sv=applyGate(sv,nq,q,MATS[g.type]);
+    }
+  }
+  return sv;
+}
+
+// ─── Presets ─────────────────────────────────────
+function preset(name){
+  const ps={
+    bell:{ nq:2, c:{'0-0':{type:'H'},'0-1':{type:'CNOT_CONTROL',target:1},'1-1':{type:'CNOT_TARGET',control:0}} },
+    ghz: { nq:3, c:{
+      '0-0':{type:'H'},
+      '0-1':{type:'CNOT_CONTROL',target:1},'1-1':{type:'CNOT_TARGET',control:0},
+      '1-2':{type:'CNOT_CONTROL',target:2},'2-2':{type:'CNOT_TARGET',control:1},
+    }},
+    hAll:{ nq, c:(()=>{const r={};for(let q=0;q<nq;q++)r[`${q}-0`]={type:'H'};return r;})() },
+    qft2:{ nq:2, c:{
+      '0-0':{type:'H'},'0-1':{type:'S'},'0-2':{type:'T'},
+      '1-3':{type:'H'},
+    }},
+  };
+  const p=ps[name]; if(!p) return;
+  nq=p.nq; circuit={...p.c}; cnotPend=null; render();
+}
+
+// ─── Circuit helpers ──────────────────────────────
+function clearAt(q,s){
+  const key=`${q}-${s}`, g=circuit[key]; if(!g) return;
+  if(g.type==='CNOT_CONTROL'&&g.target!=null) delete circuit[`${g.target}-${s}`];
+  if(g.type==='CNOT_TARGET') delete circuit[`${g.control}-${s}`];
+  if(cnotPend?.q===q&&cnotPend?.s===s) cnotPend=null;
+  delete circuit[key];
+}
+
+// ─── Drag handlers: PALETTE ───────────────────────
+function palDragStart(e,gate){
+  drag={mode:'palette',gate};
+  e.dataTransfer.effectAllowed='copy';
+  e.dataTransfer.setData('text/plain',gate);
+  showTrash(false);
+}
+
+// ─── Drag handlers: CELLS ─────────────────────────
+function cellDragStart(e,q,s){
+  const g=circuit[`${q}-${s}`]; if(!g){e.preventDefault();return;}
+  if(g.type==='CNOT_CONTROL'&&g.target==null){
+    // Pending control → enter connect mode
+    drag={mode:'cnot-connect',q,s};
+    e.dataTransfer.effectAllowed='link';
+    // Highlight same-column cells
+    setTimeout(()=>highlightCnotColumn(s,q),0);
+  } else {
+    drag={mode:'cell',q,s};
+    e.dataTransfer.effectAllowed='move';
+    showTrash(true);
+  }
+  e.dataTransfer.setData('text/plain',g.type);
+}
+
+function cellDragOver(e,q,s){
+  e.preventDefault();
+  clearCellHighlights();
+  const cell=getCellEl(q,s); if(!cell) return;
+
+  if(drag?.mode==='cnot-connect'){
+    if(drag.s===s&&drag.q!==q){
+      cell.classList.add('drop-cnot');
+      e.dataTransfer.dropEffect='link';
+    } else {
+      e.dataTransfer.dropEffect='none';
+    }
+  } else if(drag){
+    cell.classList.add('drop-ok');
+    e.dataTransfer.dropEffect='copy';
+  }
+}
+
+function cellDragLeave(e,q,s){
+  getCellEl(q,s)?.classList.remove('drop-ok','drop-cnot','drop-bad');
+}
+
+function cellDrop(e,q,s){
+  e.preventDefault();
+  clearCellHighlights();
+  if(!drag){render();return;}
+
+  if(drag.mode==='palette'){
+    if(drag.gate==='CNOT'){
+      clearAt(q,s);
+      circuit[`${q}-${s}`]={type:'CNOT_CONTROL',target:null};
+      cnotPend={q,s};
+    } else {
+      clearAt(q,s);
+      circuit[`${q}-${s}`]={type:drag.gate};
+    }
+  } else if(drag.mode==='cnot-connect'){
+    if(drag.s===s&&drag.q!==q){
+      circuit[`${drag.q}-${s}`].target=q;
+      clearAt(q,s);
+      circuit[`${q}-${s}`]={type:'CNOT_TARGET',control:drag.q};
+      cnotPend=null;
+    }
+    // invalid → keep pending, no change
+  } else if(drag.mode==='cell'){
+    const {q:fq,s:fs}=drag;
+    if(fq===q&&fs===s){drag=null;showTrash(false);render();return;}
+    const old=circuit[`${fq}-${fs}`];
+    clearAt(fq,fs);
+    clearAt(q,s);
+    if(old&&old.type!=='CNOT_TARGET'){
+      if(old.type==='CNOT_CONTROL'){
+        circuit[`${q}-${s}`]={type:'CNOT_CONTROL',target:null};
+        cnotPend={q,s};
+      } else {
+        circuit[`${q}-${s}`]={type:old.type};
+      }
+    }
+  }
+
+  drag=null; showTrash(false); render();
+}
+
+function cellDragEnd(e,q,s){
+  // Fires if drag was canceled (no drop target)
+  clearCellHighlights();
+  drag=null; showTrash(false); render();
+}
+
+// ─── Drag handlers: TRASH ─────────────────────────
+function trashOver(e){
+  e.preventDefault();
+  if(drag?.mode==='cell'||drag?.mode==='cnot-connect'){
+    document.getElementById('trashZone').classList.add('hover-trash');
+  }
+}
+function trashLeave(e){
+  document.getElementById('trashZone').classList.remove('hover-trash');
+}
+function trashDrop(e){
+  e.preventDefault();
+  document.getElementById('trashZone').classList.remove('hover-trash');
+  if(drag?.mode==='cell'||drag?.mode==='cnot-connect'){
+    clearAt(drag.q,drag.s);
+  }
+  drag=null; showTrash(false); render();
+}
+
+// ─── UI helpers ───────────────────────────────────
+function showTrash(v){
+  document.getElementById('trashZone').classList.toggle('visible',v);
+}
+function delGate(q,s){ clearAt(q,s); render(); }
+function getCellEl(q,s){
+  return document.querySelector(`[data-cell="${q}-${s}"]`);
+}
+function clearCellHighlights(){
+  document.querySelectorAll('.cell').forEach(el=>{
+    el.classList.remove('drop-ok','drop-cnot','drop-bad','cnot-col-target');
+  });
+}
+function highlightCnotColumn(s,excludeQ){
+  for(let q=0;q<nq;q++){
+    if(q===excludeQ) continue;
+    const el=getCellEl(q,s);
+    if(el&&!el.classList.contains('placed')) el.classList.add('cnot-col-target');
+  }
+}
+
+// ─── Format helpers ───────────────────────────────
+function fmtAmp(a){
+  return `${a.re.toFixed(3)}${a.im>=0?'+':'-'}${Math.abs(a.im).toFixed(3)}i`;
+}
+
+// ─── Render ───────────────────────────────────────
+function renderToolbar(){
+  let h='';
+  for(const[k,info]of Object.entries(GATE_INFO)){
+    const on=selGate===k;
+    const sty=on?`--gc:${info.color};border-color:${info.color};background:${info.color}20;color:${info.color};`
+                 :`--gc:${info.color};`;
+    h+=`<button class="gate-btn${on?' sel':''}" style="${sty}"
+          draggable="true"
+          ondragstart="palDragStart(event,'${k}')"
+          title="${info.title}: ${info.desc}"
+          onclick="selGate='${k}';renderToolbar()"
+        >${info.label}</button>`;
+  }
+  h+=`<div class="vdiv"></div>`;
+  h+=`<span class="gate-name" style="color:${GATE_INFO[selGate].color}">${GATE_INFO[selGate].title}</span>`;
+  h+=`<div class="rgroup">`;
+  h+=`<span class="xs-lbl">PRESET:</span>`;
+  for(const[n,l]of[['bell','Bell'],['ghz','GHZ'],['hAll','H⊗n'],['qft2','QFT']])
+    h+=`<button class="sm-btn" onclick="preset('${n}')">${l}</button>`;
+  h+=`<div class="vdiv"></div><span class="xs-lbl">QUBITS:</span>`;
+  for(const n of[1,2,3,4])
+    h+=`<button class="q-btn${nq===n?' on':''}" onclick="nq=${n};circuit={};cnotPend=null;render()">${n}</button>`;
+  h+=`<div class="vdiv"></div>`;
+  h+=`<button class="sm-btn" onclick="circuit={};cnotPend=null;render()">Clear</button>`;
+  h+=`</div>`;
+  document.getElementById('toolbar').innerHTML=h;
+}
+
+function renderHints(){
+  const hc=document.getElementById('hintCnot');
+  const hk=document.getElementById('hintConn');
+  if(cnotPend&&circuit[`${cnotPend.q}-${cnotPend.s}`]?.target==null){
+    hc.style.display='none';
+    hk.style.display='block';
+    hk.textContent=`⟳ CNOT control placed at q${cnotPend.q} step ${cnotPend.s+1} — drag the ● to another qubit in the same column to connect the target`;
+  } else if(selGate==='CNOT'&&!cnotPend){
+    hk.style.display='none';
+    hc.style.display='block';
+    hc.textContent= nq<2
+      ? 'CX needs at least 2 qubits — switch to 2+ qubits first'
+      : 'Drag CX from the palette onto a qubit wire to place the control (●), then drag ● to a qubit in the same column for the target (⊕)';
+  } else {
+    hc.style.display='none';
+    hk.style.display='none';
+  }
+}
+
+function renderCircuit(){
+  let h='<div class="step-row">';
+  for(let s=0;s<STEPS;s++)
+    h+=`<div class="step-lbl" style="width:${CSIZE}px;margin-right:${s<STEPS-1?CGAP:0}px">t${s+1}</div>`;
+  h+='</div>';
+
+  for(let q=0;q<nq;q++){
+    h+=`<div class="q-row" style="margin-bottom:${q<nq-1?RGAP:0}px">`;
+    h+=`<div class="q-lbl">q${q}</div>`;
+    h+=`<div class="wire-track"><div class="wire-line"></div>`;
+
+    for(let s=0;s<STEPS;s++){
+      const key=`${q}-${s}`, gate=circuit[key], gt=gate?.type;
+      const isPendCtrl = gt==='CNOT_CONTROL'&&gate.target==null;
+
+      // Gate visuals
+      let text='', clr='transparent', bg='transparent',
+          brd='#1e2d5e55', brdSty='dashed', glow='none', fs=12,
+          placed=false, draggableAttr='', dragHandler='';
+
+      if(gt==='CNOT_CONTROL'){
+        text='●'; clr=GATE_INFO.CNOT.color; bg=`${GATE_INFO.CNOT.color}18`;
+        brd=GATE_INFO.CNOT.color; brdSty='solid'; glow=`0 0 12px ${GATE_INFO.CNOT.color}55`;
+        placed=true; draggableAttr='draggable="true"';
+        dragHandler=`ondragstart="cellDragStart(event,${q},${s})" ondragend="cellDragEnd(event,${q},${s})"`;
+      } else if(gt==='CNOT_TARGET'){
+        text='⊕'; clr=GATE_INFO.CNOT.color; bg=`${GATE_INFO.CNOT.color}12`;
+        brd=`${GATE_INFO.CNOT.color}88`; brdSty='solid'; fs=18;
+        placed=true; draggableAttr='draggable="true"';
+        dragHandler=`ondragstart="cellDragStart(event,${q},${s})" ondragend="cellDragEnd(event,${q},${s})"`;
+      } else if(gt&&GATE_INFO[gt]){
+        const gi=GATE_INFO[gt];
+        text=gi.label; clr=gi.color; bg=`${gi.color}1a`;
+        brd=gi.color; brdSty='solid'; glow=`0 0 12px ${gi.color}55`;
+        placed=true; draggableAttr='draggable="true"';
+        dragHandler=`ondragstart="cellDragStart(event,${q},${s})" ondragend="cellDragEnd(event,${q},${s})"`;
+      }
+
+      const pendClass = isPendCtrl ? ' pending-ctrl' : '';
+      const cellStyle = `--gc:${clr};border-style:${brdSty};border-color:${brd};background:${bg};color:${clr};font-size:${fs}px;box-shadow:${glow};`;
+
+      // CNOT vertical line (only for connected control)
+      let vline='';
+      if(gt==='CNOT_CONTROL'&&gate.target!=null){
+        const tgt=gate.target, lh=Math.abs(tgt-q)*RSTRIDE;
+        const dir=tgt>q?'top:50%':'bottom:50%';
+        vline=`<div class="cnot-vline" style="height:${lh}px;${dir};background:${GATE_INFO.CNOT.color}"></div>`;
+      }
+
+      const delBtn = placed
+        ? `<div class="del-btn" onclick="event.stopPropagation();delGate(${q},${s})" title="Remove gate">×</div>`
+        : '';
+      h+=`<div class="cell-wrap" style="margin-right:${s<STEPS-1?CGAP:0}px">${vline}`;
+      h+=`<div class="cell${placed?' placed':''}${pendClass}"
+               data-cell="${q}-${s}"
+               style="${cellStyle}"
+               ${draggableAttr} ${dragHandler}
+               ondragover="cellDragOver(event,${q},${s})"
+               ondragleave="cellDragLeave(event,${q},${s})"
+               ondrop="cellDrop(event,${q},${s})"
+             >${text}</div>${delBtn}`;
+      h+=`</div>`;
+    }
+
+    h+=`<div class="measure-sym">⊢M</div></div></div>`;
+  }
+
+  document.getElementById('circuitWrap').innerHTML=h;
+}
+
+function renderProbs(){
+  const sv=simulate();
+  const probs=sv.map(a=>a.re*a.re+a.im*a.im);
+  const maxP=Math.max(...probs,1e-9);
+  const nActive=probs.filter(p=>p>1e-5).length;
+  const norm=probs.reduce((s,p)=>s+p,0);
+  const size=1<<nq;
+
+  let h=`<div class="prob-head">Measurement Probabilities</div>`;
+  for(let i=0;i<size;i++){
+    const label='|'+i.toString(2).padStart(nq,'0')+'⟩';
+    const prob=probs[i]||0, pct=prob*100, barW=(prob/maxP)*100, sig=prob>1e-5;
+    const lc=sig?'#94a3b8':'#1e293b', ac=sig?'#475569':'#1e293b';
+    h+=`<div class="prob-row">
+      <div class="prob-lbl" style="color:${lc}">${label}</div>
+      <div class="bar-bg">
+        <div class="bar-fill" style="width:${barW}%;${sig?'':'background:#0d1426'}">
+          ${pct>9?`<span class="bar-pct-in">${pct.toFixed(1)}%</span>`:''}
+        </div>
+        ${pct<=9?`<span class="bar-pct-out" style="color:${sig?'#475569':'#1e293b'}">${pct.toFixed(1)}%</span>`:''}
+      </div>
+      <div class="amp-val" style="color:${ac}">${fmtAmp(sv[i])}</div>
+    </div>`;
+  }
+  const sc=nActive===1?'#34d399':'#7c3aed';
+  const sm=nActive===1?'◉ Pure state — deterministic result':`◉ Superposition — ${nActive} active states`;
+  h+=`<div class="prob-footer"><span style="color:${sc}">${sm}</span><span>Σ|αᵢ|² = ${norm.toFixed(5)}</span></div>`;
+  document.getElementById('probWrap').innerHTML=h;
+}
+
+// ─── Bloch vector from statevector ───────────────
+// Computes the reduced density matrix for qubit q,
+// then extracts the Bloch sphere (x,y,z) and purity r=|vector|.
+function getBlochVector(sv, n, q) {
+  const bit = n - 1 - q, size = 1 << n;
+  let rho00 = 0, r01re = 0, r01im = 0;
+  for (let i = 0; i < size; i++) {
+    if ((i >> bit) & 1) continue;          // qubit q = 0 here
+    const j = i | (1 << bit);             // qubit q = 1 here
+    rho00 += sv[i].re*sv[i].re + sv[i].im*sv[i].im;
+    // ρ[0][1] += ψ_i · ψ_j*
+    r01re  += sv[i].re*sv[j].re + sv[i].im*sv[j].im;
+    r01im  += sv[i].im*sv[j].re - sv[i].re*sv[j].im;
+  }
+  const x = 2*r01re, y = -2*r01im, z = 2*rho00 - 1;
+  return { x, y, z, purity: Math.sqrt(x*x + y*y + z*z) };
+}
+
+// ─── Bloch sphere orbit state ─────────────────────
+let blochRot  = { x: 0.42, y: 0.85 }; // elevation, azimuth (radians)
+let blochDrag = null;
+
+document.addEventListener('mousemove', e => {
+  if (!blochDrag) return;
+  blochRot.x = Math.max(-1.4, Math.min(1.4,
+    blochDrag.rx + (e.clientY - blochDrag.sy) * 0.013));
+  blochRot.y = blochDrag.ry + (e.clientX - blochDrag.sx) * 0.013;
+  redrawSpheres();
+});
+document.addEventListener('mouseup', () => { blochDrag = null; });
+
+function blochDown(e) {
+  blochDrag = { sx: e.clientX, sy: e.clientY, rx: blochRot.x, ry: blochRot.y };
+  e.preventDefault();
+}
+
+function redrawSpheres() {
+  const sv = simulate();
+  for (let q = 0; q < nq; q++) {
+    const canvas = document.getElementById(`bsph-${q}`);
+    if (canvas) drawBloch(canvas, getBlochVector(sv, nq, q));
+  }
+}
+
+// ─── 3D Bloch sphere canvas renderer ─────────────
+function drawBloch(canvas, bv) {
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const cx = W/2, cy = H/2, R = Math.min(W,H)*0.355;
+  const {cos:co, sin:si, atan2, PI} = Math;
+  const rx = blochRot.x, ry = blochRot.y;
+
+  // 3D → 2D orthographic projection with orbit rotation
+  // Convention: visual y-axis = Bloch z (|0⟩ at top), x = Bloch x, z-depth = Bloch y
+  function proj(vx, vy, vz) {
+    const x1 = vx*co(ry) + vz*si(ry), z1 = -vx*si(ry) + vz*co(ry);
+    const y2 = vy*co(rx) - z1*si(rx);
+    return [cx + x1*R, cy - y2*R];
+  }
+
+  ctx.clearRect(0, 0, W, H);
+
+  // Sphere outline
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, PI*2);
+  ctx.strokeStyle = '#1e3a5f'; ctx.lineWidth = 1; ctx.stroke();
+
+  // Grid: longitude lines (meridians through poles)
+  for (let lon = 0; lon < 360; lon += 30) {
+    const phi = lon*PI/180;
+    ctx.beginPath();
+    for (let i = 0; i <= 60; i++) {
+      const th = (i/60)*PI*2;
+      const [px,py] = proj(si(th)*co(phi), co(th), si(th)*si(phi));
+      i ? ctx.lineTo(px,py) : ctx.moveTo(px,py);
+    }
+    ctx.strokeStyle = '#1e3a5f55'; ctx.lineWidth = 0.5; ctx.stroke();
+  }
+
+  // Grid: latitude lines (parallels)
+  for (let lat = -60; lat <= 60; lat += 30) {
+    const th = (90-lat)*PI/180, latR = si(th), latY = co(th);
+    ctx.beginPath();
+    for (let i = 0; i <= 60; i++) {
+      const phi = (i/60)*PI*2;
+      const [px,py] = proj(latR*co(phi), latY, latR*si(phi));
+      i ? ctx.lineTo(px,py) : ctx.moveTo(px,py);
+    }
+    ctx.strokeStyle = lat===0 ? '#1e3a5faa' : '#1e3a5f44';
+    ctx.lineWidth   = lat===0 ? 1 : 0.5; ctx.stroke();
+  }
+
+  // Axes helper
+  function axis(to, color, lbl) {
+    const o = proj(0,0,0), t = proj(...to);
+    ctx.beginPath(); ctx.moveTo(o[0],o[1]); ctx.lineTo(t[0],t[1]);
+    ctx.strokeStyle = color; ctx.lineWidth = 1.2; ctx.stroke();
+    const ang = atan2(t[1]-o[1], t[0]-o[0]);
+    ctx.beginPath();
+    ctx.moveTo(t[0],t[1]);
+    ctx.lineTo(t[0]-7*co(ang-.35), t[1]-7*si(ang-.35));
+    ctx.lineTo(t[0]-7*co(ang+.35), t[1]-7*si(ang+.35));
+    ctx.fillStyle = color; ctx.fill();
+    ctx.fillStyle = color; ctx.font = '9px monospace'; ctx.textAlign = 'center';
+    ctx.fillText(lbl, t[0]+(t[0]-cx)*.2, t[1]+(t[1]-cy)*.2+3);
+  }
+  const AL = 1.26;
+  axis([AL,0,0], '#f43f5e88', 'x');
+  axis([0,AL,0], '#10b98188', 'z');   // visual up = Bloch z
+  axis([0,0,AL], '#3b82f688', 'y');
+
+  // Pole labels
+  function ptLabel(vx,vy,vz,lbl) {
+    const [px,py] = proj(vx,vy,vz);
+    ctx.fillStyle='#475569'; ctx.font='9px monospace'; ctx.textAlign='center';
+    ctx.fillText(lbl, px, py+3);
+  }
+  ptLabel(0,1.2,0,'|0⟩'); ptLabel(0,-1.2,0,'|1⟩');
+
+  // Bloch vector: map (bx,by,bz) → visual (bx, bz, by)
+  const {x:bx, y:by, z:bz, purity:r} = bv;
+  const vx=bx*r, vy=bz*r, vz=by*r;  // scaled by purity
+  const orig  = proj(0,0,0);
+  const tip   = proj(vx, vy, vz);
+  const shade = proj(vx,  0, vz);    // equatorial shadow
+
+  // Dashed shadow lines
+  ctx.setLineDash([2,3]);
+  ctx.strokeStyle='#3b82f630'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(orig[0],orig[1]); ctx.lineTo(shade[0],shade[1]); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(shade[0],shade[1]); ctx.lineTo(tip[0],tip[1]);   ctx.stroke();
+  ctx.setLineDash([]);
+
+  // State vector arrow
+  const col = r>0.99 ? '#60a5fa' : r>0.5 ? '#818cf8' : '#6366f166';
+  ctx.beginPath(); ctx.moveTo(orig[0],orig[1]); ctx.lineTo(tip[0],tip[1]);
+  ctx.strokeStyle=col; ctx.lineWidth=2.5; ctx.stroke();
+  ctx.beginPath(); ctx.arc(tip[0],tip[1],4,0,PI*2); ctx.fillStyle=col; ctx.fill();
+}
+
+// ─── Step-by-step simulation ──────────────────────
+// Returns [{gate:null, sv:initial}, {gate, sv:after_gate}, ...]
+function simulateSteps() {
+  let sv = Array.from({length:1<<nq}, (_,i) => C(i===0?1:0));
+  const out = [{ gate:null, sv: sv.map(a=>({...a})) }];
+  for (let s=0; s<STEPS; s++) {
+    const done=new Set(), here=[];
+    for (let q=0; q<nq; q++) {
+      const g=circuit[`${q}-${s}`];
+      if (!g) continue;
+      if (g.type==='CNOT_CONTROL'&&g.target!=null&&!done.has(q)) {
+        here.push({type:'CNOT',ctrl:q,tgt:g.target}); done.add(q); done.add(g.target);
+      } else if (g.type!=='CNOT_CONTROL'&&g.type!=='CNOT_TARGET'&&MATS[g.type]) {
+        here.push({type:g.type,q});
+      }
+    }
+    for (const gate of here) {
+      sv = gate.type==='CNOT'
+        ? applyCNOT(sv,nq,gate.ctrl,gate.tgt)
+        : applyGate(sv,nq,gate.q,MATS[gate.type]);
+      out.push({ gate, sv: sv.map(a=>({...a})) });
+    }
+  }
+  return out;
+}
+
+// ─── Amplitude → readable ket coefficient ─────────
+function fmtCoeffStr(a) {
+  const {re,im}=a, tol=1e-5, S2=1/Math.sqrt(2);
+  const nr=v=>Math.abs(v)<tol, eq=(a,b)=>Math.abs(a-b)<tol;
+  // Pure real
+  if (nr(im)) {
+    if (eq(re,1))   return '';
+    if (eq(re,-1))  return '−';
+    if (eq(re,S2))  return '(1/√2)';
+    if (eq(re,-S2)) return '−(1/√2)';
+    if (eq(re,.5))  return '(1/2)';
+    if (eq(re,-.5)) return '−(1/2)';
+    return (re<0?'−':'')+Math.abs(re).toFixed(3);
+  }
+  // Pure imaginary
+  if (nr(re)) {
+    if (eq(im,1))   return 'i';
+    if (eq(im,-1))  return '−i';
+    if (eq(im,S2))  return '(i/√2)';
+    if (eq(im,-S2)) return '−(i/√2)';
+    if (eq(im,.5))  return '(i/2)';
+    if (eq(im,-.5)) return '−(i/2)';
+    return (im<0?'−':'')+Math.abs(im).toFixed(3)+'i';
+  }
+  // Complex
+  if (eq(re,.5)&&eq(im,.5))   return '(1+i)/2';
+  if (eq(re,.5)&&eq(im,-.5))  return '(1−i)/2';
+  if (eq(re,-.5)&&eq(im,.5))  return '−(1−i)/2';
+  if (eq(re,-.5)&&eq(im,-.5)) return '−(1+i)/2';
+  if (eq(re,S2)&&eq(im,S2))   return 'e^(iπ/4)';
+  if (eq(re,S2)&&eq(im,-S2))  return 'e^(−iπ/4)';
+  if (eq(re,-S2)&&eq(im,S2))  return '−e^(−iπ/4)';
+  if (eq(re,-S2)&&eq(im,-S2)) return '−e^(iπ/4)';
+  const ri=im>=0?'+':'−';
+  return `(${re.toFixed(3)}${ri}${Math.abs(im).toFixed(3)}i)`;
+}
+
+// ─── Statevector → ket notation string ────────────
+function fmtState(sv, n) {
+  const items=[];
+  for (let i=0;i<sv.length;i++) {
+    const a=sv[i];
+    if (a.re*a.re+a.im*a.im<1e-9) continue;
+    const raw=fmtCoeffStr(a), neg=raw.startsWith('−');
+    items.push({sign:neg?'−':'+', mag:neg?raw.slice(1):raw,
+                ket:'|'+i.toString(2).padStart(n,'0')+'⟩'});
+  }
+  if (!items.length) return '0';
+  let r=(items[0].sign==='−'?'−':'')+items[0].mag+items[0].ket;
+  for (let i=1;i<items.length;i++) {
+    const {sign,mag,ket}=items[i];
+    r+=` ${sign} ${mag}${ket}`;
+  }
+  return r;
+}
+
+// ─── Gate-by-gate explanation ─────────────────────
+const GDESC = {
+  H: q=>[GATE_INFO.H.color, `Hadamard  ·  q${q}`,
+    `Splits the qubit into equal superposition. |0⟩ becomes (|0⟩+|1⟩)/√2 and |1⟩ becomes (|0⟩−|1⟩)/√2 — both give 50/50 measurement odds but with opposite phases. On the Bloch sphere this is a 180° rotation around the X+Z diagonal, sending the north pole to the equator.`],
+  X: q=>[GATE_INFO.X.color, `Pauli-X  ·  q${q}  (quantum NOT)`,
+    `Flips |0⟩↔|1⟩ — the quantum version of a classical NOT gate. On the Bloch sphere: 180° rotation around the x-axis. Probabilities swap completely.`],
+  Y: q=>[GATE_INFO.Y.color, `Pauli-Y  ·  q${q}`,
+    `Combines a bit flip and a phase shift: |0⟩→i|1⟩ and |1⟩→−i|0⟩. Bloch sphere: 180° rotation around the y-axis. The i factors are invisible in probabilities but change how this qubit interferes with future gates.`],
+  Z: q=>[GATE_INFO.Z.color, `Pauli-Z  ·  q${q}`,
+    `Phase flip only — |0⟩ is untouched, |1⟩ gains a −1. Probabilities are unchanged, but this phase matters when the qubit is in superposition: |+⟩ flips to |−⟩. Bloch sphere: 180° around the z-axis.`],
+  S: q=>[GATE_INFO.S.color, `S gate  ·  q${q}  (√Z, 90° phase)`,
+    `|0⟩ unchanged, |1⟩ → i|1⟩ — a 90° phase rotation. Two S gates equal one Z. Rotates the Bloch vector 90° around the z-axis; useful for steering phase in QFT and phase estimation circuits.`],
+  T: q=>[GATE_INFO.T.color, `T gate  ·  q${q}  (√S, 45° phase)`,
+    `|0⟩ unchanged, |1⟩ → e^(iπ/4)|1⟩ — a 45° phase rotation. Eight T gates = one full Z. Combined with Clifford gates, the T gate is what makes quantum computers more powerful than classical ones.`],
+  CNOT: (c,t)=>[GATE_INFO.CNOT.color, `CNOT  ·  control q${c} → target q${t}`,
+    `If q${c} is |1⟩, flip q${t}; if |0⟩, leave q${t} alone. When q${c} is in <em>superposition</em>, the gate does both at once — creating <em>entanglement</em>. The two qubits become correlated: measuring one instantly fixes the other. The 0% states in the probability panel are the fingerprint.`],
+};
+
+function renderExplanation() {
+  const steps = simulateSteps();
+  let h = `<div class="explain-head">Circuit Analysis</div>`;
+
+  // Initial state
+  h += `<div class="step-block" style="border-color:#1e2d5e">
+          <div class="step-title" style="color:#475569">Initial state</div>
+          <div class="ket-line">${fmtState(steps[0].sv, nq)}</div>
+        </div>`;
+
+  if (steps.length === 1) {
+    h += `<div class="step-block" style="border-color:#1e2d5e">
+            <div class="step-body" style="color:#334155">No gates placed yet — drag one from the palette.</div>
+          </div>`;
+    document.getElementById('explainWrap').innerHTML = h; return;
+  }
+
+  // One block per gate, with the resulting state shown
+  steps.slice(1).forEach((step, i) => {
+    const g = step.gate;
+    const [col, title, body] = g.type==='CNOT'
+      ? GDESC.CNOT(g.ctrl, g.tgt)
+      : GDESC[g.type](g.q);
+    h += `<div class="step-block" style="border-color:${col}55">
+            <div class="step-title" style="color:${col}">${i+1}. ${title}</div>
+            <div class="step-body">${body}</div>
+            <div class="ket-line">→ ${fmtState(step.sv, nq)}</div>
+          </div>`;
+  });
+
+  // Summary
+  const sv = steps[steps.length-1].sv;
+  const probs = sv.map(a=>a.re*a.re+a.im*a.im);
+  const nAct=probs.filter(p=>p>1e-4).length, size=1<<nq, maxP=Math.max(...probs);
+  let summary;
+  if (nAct===1) {
+    const idx=probs.findIndex(p=>p>0.9);
+    summary=`Outcome is <em>deterministic</em> — every measurement gives ${'|'+idx.toString(2).padStart(nq,'0')+'⟩'}. No quantum uncertainty remains.`;
+  } else if (nAct===size && Math.abs(maxP-1/size)<0.01) {
+    summary=`<em>Uniform superposition</em> — all ${size} outcomes equally likely at ${(100/size).toFixed(1)}% each.`;
+  } else {
+    const entangled=nq>1&&nAct<size&&nAct>1;
+    summary=entangled
+      ?`<em>Entangled superposition</em> — only correlated outcomes survive. The missing 0% states are the signature of entanglement.`
+      :`Superposition across ${nAct} of ${size} basis states.`;
+  }
+  h += `<div class="step-block" style="border-color:#1e2d5e;margin-top:4px">
+          <div class="step-title" style="color:#475569">Final state</div>
+          <div class="step-body">${summary}</div>
+        </div>`;
+  document.getElementById('explainWrap').innerHTML = h;
+}
+
+// ─── Bloch sphere panel ───────────────────────────
+function renderBloch() {
+  const sz = nq===1?190 : nq===2?170 : nq===3?150 : 130;
+  const sv = simulate();
+
+  let h = `<div class="bloch-head">Bloch Sphere${nq>1?' — per qubit':''}</div>`;
+  h += `<div class="bloch-sub">Drag to orbit · The arrow shows the qubit's quantum state · r&lt;1 means entangled (mixed)</div>`;
+  h += `<div class="bloch-row">`;
+  for (let q=0; q<nq; q++) {
+    const bv = getBlochVector(sv, nq, q);
+    h += `<div class="bloch-item">
+            <div class="bloch-qlbl">q${q}</div>
+            <canvas id="bsph-${q}" class="bloch-canvas" width="${sz}" height="${sz}"
+              onmousedown="blochDown(event)"></canvas>
+            <div class="bloch-coords">
+              x=${bv.x.toFixed(2)}  y=${bv.y.toFixed(2)}  z=${bv.z.toFixed(2)}<br>
+              ${bv.purity>0.99?'pure state  r=1.00':`mixed  r=${bv.purity.toFixed(2)}`}
+            </div>
+          </div>`;
+  }
+  h += `</div>`;
+  document.getElementById('blochWrap').innerHTML = h;
+
+  // Draw each sphere now that canvases exist in DOM
+  for (let q=0; q<nq; q++) {
+    const canvas = document.getElementById(`bsph-${q}`);
+    if (canvas) drawBloch(canvas, getBlochVector(sv, nq, q));
+  }
+}
+
+function render(){
+  renderToolbar();
+  renderHints();
+  renderCircuit();
+  renderProbs();
+  renderExplanation();
+  renderBloch();
+}
+
+// Boot
+preset('bell');
+</script>
+</body>
+</html>
