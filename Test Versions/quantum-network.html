@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quantum Network Visualizer</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    html,body,#root{height:100%;overflow:hidden;background:#07101e;color:#e2e8f0;font-family:system-ui,sans-serif}
+    button{transition:filter .12s,transform .1s;cursor:pointer}
+    button:hover{filter:brightness(1.25)} button:active{transform:scale(.95)}
+    select,input[type=number],input[type=text]{background:#0d1e33;border:1px solid #1a3050;color:#e2e8f0;border-radius:4px;padding:4px 8px;font-size:12px;width:100%}
+    select:focus,input:focus{outline:1px solid #38bdf8}
+    label{font-size:11px;color:#4a7090;display:block;margin-bottom:3px}
+    ::-webkit-scrollbar{width:4px} ::-webkit-scrollbar-track{background:#07101e} ::-webkit-scrollbar-thumb{background:#1a3050;border-radius:2px}
+    canvas{display:block}
+    .circ-mini::-webkit-scrollbar{height:3px}
+    .circ-mini::-webkit-scrollbar-thumb{background:#1a3050}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+const PI = Math.PI, SQRT2 = Math.SQRT2;
+
+// ═══════════════════════════════════════════════════════════════
+// ── GATE MATH (single-qubit Bloch sphere) ──────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+function toBloch(t,p){ const x=Math.sin(t)*Math.cos(p),y=Math.sin(t)*Math.sin(p),z=Math.cos(t); return{x,y,z}; }
+function cartToSph(nx,ny,nz){ const r=Math.sqrt(nx*nx+ny*ny+nz*nz)||1; return[Math.acos(Math.max(-1,Math.min(1,nz/r))),(( Math.atan2(ny,nx)%(2*PI))+2*PI)%(2*PI)]; }
+
+function applyGate(gate,theta,phi){
+  const{x,y,z}=toBloch(theta,phi),c=Math.cos,s=Math.sin;
+  let nx=x,ny=y,nz=z;
+  switch(gate){
+    case'X':nx=x;ny=-y;nz=-z;break; case'Y':nx=-x;ny=y;nz=-z;break; case'Z':nx=-x;ny=-y;nz=z;break;
+    case'H':nx=z;ny=-y;nz=x;break;
+    case'S':nx=c(PI/2)*x-s(PI/2)*y;ny=s(PI/2)*x+c(PI/2)*y;nz=z;break;
+    case'S†':nx=c(-PI/2)*x-s(-PI/2)*y;ny=s(-PI/2)*x+c(-PI/2)*y;nz=z;break;
+    case'T':nx=c(PI/4)*x-s(PI/4)*y;ny=s(PI/4)*x+c(PI/4)*y;nz=z;break;
+    case'T†':nx=c(-PI/4)*x-s(-PI/4)*y;ny=s(-PI/4)*x+c(-PI/4)*y;nz=z;break;
+    case'Rx½π':nx=x;ny=c(PI/2)*y-s(PI/2)*z;nz=s(PI/2)*y+c(PI/2)*z;break;
+    case'Ry½π':nx=c(PI/2)*x+s(PI/2)*z;ny=y;nz=-s(PI/2)*x+c(PI/2)*z;break;
+    case'Rz½π':nx=c(PI/2)*x-s(PI/2)*y;ny=s(PI/2)*x+c(PI/2)*y;nz=z;break;
+    case'Rx π':nx=x;ny=-y;nz=-z;break; case'Ry π':nx=-x;ny=y;nz=-z;break; case'Rz π':nx=-x;ny=-y;nz=z;break;
+  }
+  return cartToSph(nx,ny,nz);
+}
+
+function runCircuit(circuit, theta0=0, phi0=0){
+  let t=theta0,p=phi0;
+  for(const g of circuit)[t,p]=applyGate(g,t,p);
+  return[t,p];
+}
+
+const PRESETS={'|0⟩':[0,0],'|1⟩':[PI,0],'|+⟩':[PI/2,0],'|−⟩':[PI/2,PI],'|i⟩':[PI/2,PI/2]};
+
+// Gate colour palette
+const GC={
+  'H':'#818cf8','X':'#f87171','Y':'#fb923c','Z':'#facc15',
+  'S':'#4ade80','S†':'#22c55e','T':'#2dd4bf','T†':'#14b8a6',
+  'Rx½π':'#60a5fa','Ry½π':'#a78bfa','Rz½π':'#f472b6',
+  'Rx π':'#3b82f6','Ry π':'#8b5cf6','Rz π':'#ec4899',
+};
+const CIRC_GATES=['H','X','Y','Z','S','S†','T','T†','Rx½π','Ry½π','Rz½π','Rx π','Ry π','Rz π'];
+
+// QNet protocol presets (label → gate sequence + tooltip)
+const QNET_PRESETS=[
+  {label:'Prep |+⟩',   gates:['H'],            tip:'Hadamard: sends |0⟩ to equator (equal superposition) — used to prepare photon for QKD'},
+  {label:'Prep |i⟩',   gates:['H','S'],         tip:'H then S: superposition with 90° phase — used in 6-state QKD protocol'},
+  {label:'X correct',  gates:['X'],             tip:'Bit-flip correction gate — applied after teleportation if Bob measures |1⟩'},
+  {label:'Z correct',  gates:['Z'],             tip:'Phase-flip correction gate — applied after teleportation if Bob measures |+⟩'},
+  {label:'BSM basis',  gates:['H','S†'],        tip:'Rotate to Bell basis before measurement — Bell-state measurement at repeater'},
+  {label:'Decode X',   gates:['H'],             tip:'Rotate to X-basis before measure — for BB84 X-basis reconciliation'},
+  {label:'Ry(π/4)',    gates:['Ry½π'],          tip:'45° rotation — used in E91 protocol measurement basis 2'},
+  {label:'Reset |0⟩',  gates:['|0⟩'],          tip:'Re-initialise qubit to |0⟩ ground state'},
+];
+
+// ═══════════════════════════════════════════════════════════════
+// ── FIBER / NETWORK DATA ───────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+const FIBERS=[
+  {id:'G652D',name:'G.652.D — SMF-28e+',std:'ITU-T G.652.D',mode:'SM',core:'9/125 μm',wl:[{nm:1310,alpha:.35,D:.092},{nm:1550,alpha:.20,D:17}],pmd:.1,desc:'Standard SMF · most deployed · best for quantum at 1550 nm'},
+  {id:'G652A',name:'G.652.A — Classic SMF-28',std:'ITU-T G.652.A',mode:'SM',core:'9/125 μm',wl:[{nm:1310,alpha:.40,D:.09},{nm:1550,alpha:.25,D:17}],pmd:.5,desc:'Legacy standard SMF · higher PMD'},
+  {id:'G654E',name:'G.654.E — Ultra-Low Loss',std:'ITU-T G.654.E',mode:'SM',core:'13/125 μm',wl:[{nm:1550,alpha:.155,D:20},{nm:1625,alpha:.17,D:22}],pmd:.1,desc:'Ultra-low loss · 0.155 dB/km · long-haul quantum backbone'},
+  {id:'G653', name:'G.653 — DSF',std:'ITU-T G.653',mode:'SM',core:'9/125 μm',wl:[{nm:1550,alpha:.21,D:.5}],pmd:.2,desc:'Dispersion-Shifted · near-zero dispersion at 1550 nm'},
+  {id:'G655', name:'G.655 — NZDSF/LEAF',std:'ITU-T G.655',mode:'SM',core:'9/125 μm',wl:[{nm:1550,alpha:.20,D:4},{nm:1310,alpha:.35,D:-4}],pmd:.1,desc:'Non-Zero Dispersion-Shifted · metro DWDM quantum networks'},
+  {id:'G657A2',name:'G.657.A2 — Bend-Insensitive',std:'ITU-T G.657.A2',mode:'SM',core:'9/125 μm',wl:[{nm:1310,alpha:.40,D:.09},{nm:1550,alpha:.24,D:17}],pmd:.1,desc:'Bend-insensitive · indoor & last-mile building runs'},
+  {id:'OM3',  name:'OM3 — 50/125 μm MMF',std:'IEC 60793-2-10',mode:'MM',core:'50/125 μm',wl:[{nm:850,alpha:2.3,D:0},{nm:1300,alpha:.6,D:0}],pmd:.2,desc:'Laser-optimised multimode · intra-building / data centre'},
+  {id:'OM4',  name:'OM4 — 50/125 μm MMF',std:'IEC 60793-2-10',mode:'MM',core:'50/125 μm',wl:[{nm:850,alpha:2.0,D:0},{nm:1300,alpha:.5,D:0}],pmd:.2,desc:'High-bandwidth MMF · short campus links'},
+  {id:'custom',name:'Custom / Specialty',std:'User-defined',mode:'SM',core:'9/125 μm',wl:[{nm:1550,alpha:.20,D:17}],pmd:.1,desc:'Define all parameters manually'},
+];
+const CONNECTORS=[
+  {id:'FC_APC',name:'FC/APC', loss:.15,desc:'Angled contact · best return loss · preferred for quantum'},
+  {id:'SC_APC',name:'SC/APC', loss:.20,desc:'Push-pull angled · common telecom'},
+  {id:'LC_APC',name:'LC/APC', loss:.15,desc:'Small form-factor angled · high density'},
+  {id:'E2000', name:'E2000/APC',loss:.10,desc:'Self-closing shutter · lab grade · highest return loss'},
+  {id:'FC_PC', name:'FC/PC',  loss:.30,desc:'Flat physical contact'},
+  {id:'SC_PC', name:'SC/PC',  loss:.30,desc:'Standard push-pull PC'},
+];
+const NODE_TYPES=[
+  {id:'building',  label:'Office Building',  icon:'🏢',color:'#3b82f6',r:26},
+  {id:'datacenter',label:'Data Center',      icon:'🖥', color:'#8b5cf6',r:26},
+  {id:'repeater',  label:'Quantum Repeater', icon:'⬡', color:'#f59e0b',r:20},
+  {id:'endpoint',  label:'End Node',          icon:'◉', color:'#10b981',r:18},
+];
+const MEMORIES=[
+  {id:'none',    name:'None'},
+  {id:'nv',      name:'NV Center (diamond)',  coherenceTypical:'1–10 ms', wl:'637 nm'},
+  {id:'ion',     name:'Trapped Ion (Ca⁺/Yb⁺)',coherenceTypical:'1–100 s', wl:'369/729 nm'},
+  {id:'neutral', name:'Neutral Atom (Rb/Cs)', coherenceTypical:'1–100 ms',wl:'780/852 nm'},
+  {id:'afc',     name:'Atomic Freq Comb',     coherenceTypical:'1–6 h',   wl:'580/606 nm'},
+  {id:'siv',     name:'Silicon-Vacancy (SiV)',coherenceTypical:'0.1–1 ms',wl:'738 nm'},
+];
+
+// ─── Helpers ──────────────────────────────────────────────────
+function ptSegDist(px,py,ax,ay,bx,by){
+  const dx=bx-ax,dy=by-ay,len2=dx*dx+dy*dy;
+  if(len2<1e-8)return Math.hypot(px-ax,py-ay);
+  const t=Math.max(0,Math.min(1,((px-ax)*dx+(py-ay)*dy)/len2));
+  return Math.hypot(px-(ax+t*dx),py-(ay+t*dy));
+}
+function hitNode(x,y,ns){return ns.find(n=>Math.hypot(x-n.x,y-n.y)<32)||null;}
+function hitLink(x,y,ls,ns){
+  for(const l of ls){const s=ns.find(n=>n.id===l.source),t=ns.find(n=>n.id===l.target);if(!s||!t)continue;if(ptSegDist(x,y,s.x,s.y,t.x,t.y)<12)return l;}
+  return null;
+}
+function computeLink(l){
+  const fiber=FIBERS.find(f=>f.id===l.fiberId)||FIBERS[0];
+  const wlData=fiber.wl.find(w=>w.nm===l.wavelengthNm)||fiber.wl[0];
+  const alpha=l.useCustomAlpha?l.customAlpha:(wlData?.alpha??0.20);
+  const conn=CONNECTORS.find(c=>c.id===l.connectorId)||CONNECTORS[0];
+  const connLoss=l.useCustomConnLoss?l.customConnLoss:conn.loss;
+  const fiberLoss=alpha*l.lengthKm, connLossTotal=l.numConnectors*connLoss, spliceLossTotal=l.numSplices*l.spliceLossDb;
+  const totalLoss=fiberLoss+connLossTotal+spliceLossTotal;
+  const T=Math.pow(10,-totalLoss/10);
+  return{fiberLoss,connLossTotal,spliceLossTotal,totalLoss,T,fidelity:T,pmd:(fiber.pmd??0.1)*Math.sqrt(l.lengthKm),dispD:wlData?.D??17,alpha};
+}
+function fidelityColor(f){if(f>.9)return'#22c55e';if(f>.7)return'#eab308';if(f>.4)return'#f97316';return'#ef4444';}
+function fidelityLabel(f){return`${(f*100).toFixed(1)}%`;}
+
+function newNode(type,x,y){
+  return{id:Date.now()+'_'+Math.random().toString(36).slice(2),type,x,y,
+    name:NODE_TYPES.find(t=>t.id===type)?.label||'Node',
+    memory:'none',coherenceMs:10,gateFidelity:99,
+    circuit:[],theta:0,phi:0};
+}
+function newLink(src,tgt){
+  return{id:Date.now()+'_'+Math.random().toString(36).slice(2),source:src,target:tgt,
+    fiberId:'G652D',wavelengthNm:1550,lengthKm:10,
+    connectorId:'FC_APC',numConnectors:2,numSplices:4,spliceLossDb:.05,
+    useCustomAlpha:false,customAlpha:.20,useCustomConnLoss:false,customConnLoss:.15};
+}
+
+// ─── Path finder (BFS) ────────────────────────────────────────
+function findPath(srcId,dstId,nodes,links){
+  if(srcId===dstId)return{nodeIds:[srcId],linkIds:[]};
+  const adj={};nodes.forEach(n=>{adj[n.id]=[];});
+  links.forEach(l=>{adj[l.source]?.push({nodeId:l.target,linkId:l.id});adj[l.target]?.push({nodeId:l.source,linkId:l.id});});
+  const queue=[{nodeId:srcId,nodeIds:[srcId],linkIds:[]}];
+  const visited=new Set([srcId]);
+  while(queue.length){
+    const{nodeId,nodeIds,linkIds}=queue.shift();
+    for(const{nodeId:nxt,linkId}of(adj[nodeId]||[])){
+      if(!visited.has(nxt)){
+        const nn=[...nodeIds,nxt],ll=[...linkIds,linkId];
+        if(nxt===dstId)return{nodeIds:nn,linkIds:ll};
+        visited.add(nxt);queue.push({nodeId:nxt,nodeIds:nn,linkIds:ll});
+      }
+    }
+  }
+  return null;
+}
+
+// ─── Simulate quantum state along a path ─────────────────────
+// Each node applies its circuit; each link applies decoherence (shrinks r)
+function simulatePath(path,nodes,links){
+  if(!path)return null;
+  let t=0,p=0,r=1.0;
+  const steps=[];
+  // Source node: apply circuit from |0⟩
+  const srcNode=nodes.find(n=>n.id===path.nodeIds[0]);
+  if(srcNode){[t,p]=runCircuit(srcNode.circuit,0,0);steps.push({nodeId:srcNode.id,theta:t,phi:p,purity:r,type:'node',label:`${srcNode.name}: apply local circuit`});}
+  // Walk links
+  for(let i=0;i<path.linkIds.length;i++){
+    const link=links.find(l=>l.id===path.linkIds[i]);
+    const nextNode=nodes.find(n=>n.id===path.nodeIds[i+1]);
+    if(link){
+      const m=computeLink(link);
+      r*=m.T;
+      steps.push({type:'link',linkId:link.id,T:m.T,totalLoss:m.totalLoss,purity:r,label:`${link.lengthKm}km fiber · loss ${m.totalLoss.toFixed(2)}dB · T=${(m.T*100).toFixed(2)}%`});
+    }
+    if(nextNode){
+      [t,p]=runCircuit(nextNode.circuit,t,p);
+      steps.push({nodeId:nextNode.id,theta:t,phi:p,purity:r,type:'node',label:`${nextNode.name}: apply local circuit`});
+    }
+  }
+  return{theta:t,phi:p,purity:r,steps};
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ── CANVAS DRAWING ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+function drawBlochMini(ctx,cx,cy,rad,theta,phi,purity){
+  ctx.save();
+  ctx.fillStyle='#040b16';ctx.strokeStyle='#1a3050';ctx.lineWidth=1;
+  ctx.beginPath();ctx.arc(cx,cy,rad,0,PI*2);ctx.fill();ctx.stroke();
+  // Cross hairs
+  ctx.lineWidth=.5;ctx.strokeStyle='#1a3050';
+  ctx.beginPath();ctx.moveTo(cx-rad,cy);ctx.lineTo(cx+rad,cy);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(cx,cy-rad);ctx.lineTo(cx,cy+rad);ctx.stroke();
+  // Poles
+  ctx.fillStyle='#88ccff';ctx.beginPath();ctx.arc(cx,cy-rad+2,1.5,0,PI*2);ctx.fill();
+  ctx.fillStyle='#ff8899';ctx.beginPath();ctx.arc(cx,cy+rad-2,1.5,0,PI*2);ctx.fill();
+  // Bloch vector (looking from +Y axis: x→right, z→up)
+  const bx=Math.sin(theta)*Math.cos(phi)*rad*purity;
+  const by=-Math.cos(theta)*rad*purity;
+  const col=purity>.7?'#fff':purity>.4?'#facc15':'#f97316';
+  ctx.strokeStyle=col;ctx.lineWidth=1.5;
+  ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(cx+bx,cy+by);ctx.stroke();
+  ctx.fillStyle=col;ctx.beginPath();ctx.arc(cx+bx,cy+by,2.5,0,PI*2);ctx.fill();
+  ctx.restore();
+}
+
+function drawNet(ctx,W,H,nodes,links,selId,linkStart,mouse,mode,simResult,simPath){
+  ctx.clearRect(0,0,W,H);
+  // Grid
+  ctx.strokeStyle='#0d1e33';ctx.lineWidth=1;
+  for(let x=0;x<W;x+=40){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
+  for(let y=0;y<H;y+=40){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+
+  // Highlight sim path links
+  const simLinkIds=new Set(simPath?.linkIds||[]);
+
+  // Links
+  links.forEach(l=>{
+    const s=nodes.find(n=>n.id===l.source),t=nodes.find(n=>n.id===l.target);
+    if(!s||!t)return;
+    const m=computeLink(l);
+    const col=fidelityColor(m.fidelity);
+    const isSel=selId===l.id, isSim=simLinkIds.has(l.id);
+    ctx.save();
+    if(isSim){ctx.shadowColor='#38bdf8';ctx.shadowBlur=12;}
+    ctx.strokeStyle=isSel?'#fff':isSim?'#38bdf8':col;
+    ctx.lineWidth=isSel||isSim?3:2.5;
+    ctx.beginPath();ctx.moveTo(s.x,s.y);ctx.lineTo(t.x,t.y);ctx.stroke();
+    ctx.shadowBlur=0;
+    const mx=(s.x+t.x)/2,my=(s.y+t.y)/2;
+    ctx.fillStyle='#07101e';ctx.beginPath();ctx.roundRect(mx-40,my-12,80,22,4);ctx.fill();
+    ctx.strokeStyle=col;ctx.lineWidth=1;ctx.stroke();
+    ctx.fillStyle=col;ctx.font='bold 10px monospace';ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText(`${l.lengthKm}km · ${fidelityLabel(m.fidelity)}`,mx,my);
+    ctx.restore();
+  });
+
+  // In-progress link
+  if(linkStart&&mouse){
+    const s=nodes.find(n=>n.id===linkStart);
+    if(s){ctx.save();ctx.strokeStyle='#38bdf8';ctx.lineWidth=2;ctx.setLineDash([8,6]);ctx.globalAlpha=.7;ctx.beginPath();ctx.moveTo(s.x,s.y);ctx.lineTo(mouse.x,mouse.y);ctx.stroke();ctx.restore();}
+  }
+
+  const simNodeIds=new Set(simPath?.nodeIds||[]);
+
+  // Nodes
+  nodes.forEach(n=>{
+    const nt=NODE_TYPES.find(t=>t.id===n.type)||NODE_TYPES[0];
+    const isSel=selId===n.id, isSim=simNodeIds.has(n.id);
+    const r=nt.r;
+    ctx.save();
+    if(isSel){ctx.shadowColor=nt.color;ctx.shadowBlur=18;}
+    else if(isSim){ctx.shadowColor='#38bdf8';ctx.shadowBlur=14;}
+    ctx.strokeStyle=isSel?'#fff':isSim?'#38bdf8':nt.color;
+    ctx.lineWidth=isSel||isSim?3:2;
+    ctx.fillStyle=isSel?nt.color+'44':'#0d1e33';
+    ctx.beginPath();ctx.arc(n.x,n.y,r,0,PI*2);ctx.fill();ctx.stroke();
+    // Icon
+    ctx.shadowBlur=0;ctx.font=`${r>20?16:13}px sans-serif`;ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText(nt.icon,n.x,n.y+1);
+    // Mini Bloch sphere above node
+    drawBlochMini(ctx,n.x,n.y-r-24,18,n.theta,n.phi,1);
+    // Circuit summary (small dots above bloch mini)
+    if(n.circuit.length>0){
+      const dots=n.circuit.slice(0,6);
+      dots.forEach((g,i)=>{
+        ctx.fillStyle=GC[g]||'#7dd3fc';
+        ctx.beginPath();ctx.arc(n.x-dots.length*5+i*10,n.y-r-50,3,0,PI*2);ctx.fill();
+      });
+      if(n.circuit.length>6){ctx.fillStyle='#4a7090';ctx.font='8px monospace';ctx.textAlign='center';ctx.fillText(`+${n.circuit.length-6}`,n.x+30,n.y-r-46);}
+    }
+    // Name label
+    ctx.shadowBlur=0;ctx.fillStyle=isSel?'#fff':'#94a3b8';ctx.font='bold 11px system-ui';ctx.textAlign='center';ctx.textBaseline='top';
+    ctx.fillText(n.name,n.x,n.y+r+5);
+    ctx.restore();
+  });
+
+  // Cursor hint
+  if(mode==='addNode'&&mouse){ctx.save();ctx.globalAlpha=.4;ctx.strokeStyle='#38bdf8';ctx.lineWidth=1.5;ctx.setLineDash([4,4]);ctx.beginPath();ctx.arc(mouse.x,mouse.y,26,0,PI*2);ctx.stroke();ctx.restore();}
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ── COMPONENTS ─────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+function NetworkCanvas({nodes,links,selId,linkStart,mode,addNodeType,onSelectNode,onSelectLink,onPlaceNode,onStartLink,onCompleteLink,onMoveNode,onDeselect,simResult,simPath}){
+  const cvRef=useRef(null);
+  const[mouse,setMouse]=useState(null);
+  const dragging=useRef(null);
+  const getPos=useCallback(e=>{const r=cvRef.current.getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top};},[]);
+
+  useEffect(()=>{
+    const cv=cvRef.current;if(!cv)return;
+    const W=cv.clientWidth,H=cv.clientHeight;cv.width=W;cv.height=H;
+    drawNet(cv.getContext('2d'),W,H,nodes,links,selId,linkStart,mouse,mode,simResult,simPath);
+  },[nodes,links,selId,linkStart,mouse,mode,simResult,simPath]);
+
+  useEffect(()=>{
+    const cv=cvRef.current;if(!cv)return;
+    const ro=new ResizeObserver(()=>{cv.width=cv.clientWidth;cv.height=cv.clientHeight;});
+    ro.observe(cv);return()=>ro.disconnect();
+  },[]);
+
+  function onMouseDown(e){
+    const{x,y}=getPos(e);const n=hitNode(x,y,nodes);
+    if(mode==='select'){
+      if(n){dragging.current={id:n.id,offX:x-n.x,offY:y-n.y};onSelectNode(n.id);}
+      else{const l=hitLink(x,y,links,nodes);if(l)onSelectLink(l.id);else onDeselect();}
+    }else if(mode==='addNode'){if(!n)onPlaceNode(addNodeType,x,y);}
+    else if(mode==='addLink'){if(n){if(!linkStart)onStartLink(n.id);else if(n.id!==linkStart)onCompleteLink(n.id);}}
+    else if(mode==='delete'){if(n)onSelectNode(n.id);else{const l=hitLink(x,y,links,nodes);if(l)onSelectLink(l.id);}}
+  }
+  function onMouseMove(e){const{x,y}=getPos(e);setMouse({x,y});if(dragging.current&&mode==='select')onMoveNode(dragging.current.id,x-dragging.current.offX,y-dragging.current.offY);}
+  function onMouseUp(){dragging.current=null;}
+
+  return<canvas ref={cvRef} style={{width:'100%',height:'100%',cursor:mode==='addNode'?'crosshair':mode==='delete'?'not-allowed':'default'}}
+    onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={()=>{dragging.current=null;setMouse(null);}}/>;
+}
+
+// ── Mini Bloch sphere SVG (for panel) ─────────────────────────
+function BlochSVG({theta,phi,purity=1,size=72}){
+  const r=size/2-5,cx=size/2,cy=size/2;
+  const bx=Math.sin(theta)*Math.cos(phi)*r*purity;
+  const by=-Math.cos(theta)*r*purity;
+  const col=purity>.7?'#e2e8f0':purity>.4?'#facc15':'#f97316';
+  return(
+    <svg width={size} height={size} style={{borderRadius:'50%',border:'1px solid #1a3050',background:'#040b16',flexShrink:0}}>
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="#1a3050" strokeWidth="1"/>
+      <line x1={cx-r} y1={cy} x2={cx+r} y2={cy} stroke="#1a3050" strokeWidth=".5"/>
+      <line x1={cx} y1={cy-r} x2={cx} y2={cy+r} stroke="#1a3050" strokeWidth=".5"/>
+      <circle cx={cx} cy={cy-r} r={2.5} fill="#88ccff"/>
+      <circle cx={cx} cy={cy+r} r={2.5} fill="#ff8899"/>
+      <line x1={cx} y1={cy} x2={cx+bx} y2={cy+by} stroke={col} strokeWidth="1.5"/>
+      <circle cx={cx+bx} cy={cy+by} r={3} fill={col}/>
+      <text x={cx-r+2} y={cy-r+10} fontSize="7" fill="#4a7090">|0⟩</text>
+      <text x={cx-r+2} y={cy+r-2}  fontSize="7" fill="#4a7090">|1⟩</text>
+    </svg>
+  );
+}
+
+// ── Compact circuit builder for a node ────────────────────────
+function CircuitMini({node,onUpdate}){
+  const[circuit,setCircuit]=useState(node.circuit||[]);
+  useEffect(()=>setCircuit(node.circuit||[]),[node.id]);// reset on node change
+
+  function addGate(g){
+    if(g.startsWith('|')){// preset state
+      const[t,p]=PRESETS[g]||[0,0];
+      const nc=[];setCircuit(nc);onUpdate({circuit:nc,theta:t,phi:p});
+    }else{
+      const nc=[...circuit,g];setCircuit(nc);onUpdate({circuit:nc});
+    }
+  }
+  function remove(i){const nc=circuit.filter((_,j)=>j!==i);setCircuit(nc);onUpdate({circuit:nc});}
+  function runNow(){const[t,p]=runCircuit(circuit);onUpdate({theta:t,phi:p});}
+  function clearAll(){setCircuit([]);onUpdate({circuit:[],theta:0,phi:0});}
+
+  const prob0=Math.cos(node.theta/2)**2;
+  const{x,y,z}=toBloch(node.theta,node.phi);
+
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:'8px'}}>
+      {/* State display */}
+      <div style={{display:'flex',gap:'10px',alignItems:'center'}}>
+        <BlochSVG theta={node.theta} phi={node.phi} size={72}/>
+        <div style={{flex:1,fontFamily:'monospace',fontSize:'11px',color:'#6b8aaa',lineHeight:'1.9'}}>
+          θ = {(node.theta*180/PI).toFixed(2)}°<br/>
+          φ = {(node.phi*180/PI).toFixed(2)}°<br/>
+          P(|0⟩) = {(prob0*100).toFixed(2)}%<br/>
+          ⟨Z⟩ = {z.toFixed(4)}
+        </div>
+      </div>
+
+      {/* QNet protocol presets */}
+      <div style={{fontSize:'9px',fontWeight:700,color:'#2d5070',textTransform:'uppercase',letterSpacing:'.1em'}}>Protocol Operations</div>
+      <div style={{display:'flex',flexWrap:'wrap',gap:'3px'}}>
+        {QNET_PRESETS.map(pr=>(
+          <button key={pr.label} onClick={()=>pr.gates.forEach(g=>addGate(g))}
+            title={pr.tip}
+            style={{background:'#0a1a2e',border:'1px solid #1a3a5c',color:'#7dd3fc',padding:'3px 7px',borderRadius:'4px',fontSize:'10px',fontFamily:'monospace'}}>
+            {pr.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Gate palette */}
+      <div style={{fontSize:'9px',fontWeight:700,color:'#2d5070',textTransform:'uppercase',letterSpacing:'.1em'}}>Individual Gates</div>
+      <div style={{display:'flex',flexWrap:'wrap',gap:'3px'}}>
+        {CIRC_GATES.map(g=>(
+          <button key={g} onClick={()=>addGate(g)}
+            style={{background:'#040b16',border:`1px solid ${GC[g]+'66'}`,color:GC[g],padding:'2px 7px',borderRadius:'4px',fontSize:'10px',fontFamily:'monospace'}}>
+            {g}
+          </button>
+        ))}
+        {Object.keys(PRESETS).map(k=>(
+          <button key={k} onClick={()=>addGate(k)}
+            style={{background:'#040b16',border:'1px solid #2a4060',color:'#7dd3fc',padding:'2px 7px',borderRadius:'4px',fontSize:'10px',fontFamily:'monospace'}}>
+            {k}
+          </button>
+        ))}
+      </div>
+
+      {/* Circuit tape */}
+      <div style={{fontSize:'9px',fontWeight:700,color:'#2d5070',textTransform:'uppercase',letterSpacing:'.1em'}}>Circuit  ({circuit.length} gates)</div>
+      <div className="circ-mini" style={{display:'flex',gap:'5px',overflowX:'auto',padding:'8px 6px',background:'#040b16',border:'1px solid #0d2035',borderRadius:'5px',minHeight:'52px',alignItems:'center',position:'relative'}}>
+        {circuit.length===0?(
+          <span style={{color:'#253545',fontSize:'11px',fontStyle:'italic',whiteSpace:'nowrap'}}>Add gates above →</span>
+        ):(
+          <>
+            <div style={{position:'absolute',top:'50%',left:0,right:0,height:'1px',background:'#1a3050',transform:'translateY(-50%)',zIndex:0}}/>
+            {circuit.map((g,i)=>(
+              <div key={i} style={{position:'relative',zIndex:1,flexShrink:0,display:'flex',flexDirection:'column',alignItems:'center',gap:'2px'}}>
+                <div onClick={()=>remove(i)} title="Click to remove"
+                  style={{width:'36px',height:'36px',border:`1.5px solid ${GC[g]||'#1a3050'}`,borderRadius:'5px',background:'#040b16',color:GC[g]||'#7dd3fc',display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',fontSize:'9px',fontWeight:700,fontFamily:'monospace',userSelect:'none'}}>
+                  {g}
+                </div>
+                <span style={{fontSize:'7px',color:'#2d4a60'}}>{i+1}</span>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+
+      <div style={{display:'flex',gap:'6px'}}>
+        <button onClick={runNow} style={{...S.actionBtn,flex:2,background:'#0c2240',borderColor:'#1a4a7a',color:'#38bdf8',fontWeight:700}}>▶ Apply Circuit</button>
+        <button onClick={clearAll} style={{...S.actionBtn,flex:1,color:'#f87171',borderColor:'#3a1a1a'}}>⌫ Clear</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Node properties panel ─────────────────────────────────────
+function NodeProps({node,onUpdate,onDelete}){
+  const nt=NODE_TYPES.find(t=>t.id===node.type)||NODE_TYPES[0];
+  const mem=MEMORIES.find(m=>m.id===node.memory)||MEMORIES[0];
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
+      <div style={{fontSize:'11px',fontWeight:700,color:nt.color,textTransform:'uppercase',letterSpacing:'.08em',display:'flex',alignItems:'center',gap:'6px'}}>
+        <span>{nt.icon}</span><span>{nt.label}</span>
+      </div>
+      <Field label="Name"><input type="text" value={node.name} onChange={e=>onUpdate({name:e.target.value})}/></Field>
+      <Field label="Node Type">
+        <select value={node.type} onChange={e=>onUpdate({type:e.target.value})}>
+          {NODE_TYPES.map(t=><option key={t.id} value={t.id}>{t.label}</option>)}
+        </select>
+      </Field>
+      <SH>Quantum Memory</SH>
+      <Field label="Memory Type">
+        <select value={node.memory} onChange={e=>onUpdate({memory:e.target.value})}>
+          {MEMORIES.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}
+        </select>
+      </Field>
+      {node.memory!=='none'&&<>
+        <Row><Field label="Coherence Time (ms)" style={{flex:1}}><input type="number" value={node.coherenceMs} onChange={e=>onUpdate({coherenceMs:+e.target.value})} min=".01" step=".1"/></Field>
+        <Field label="Gate Fidelity (%)" style={{flex:1}}><input type="number" value={node.gateFidelity} onChange={e=>onUpdate({gateFidelity:+e.target.value})} min="50" max="100" step=".1"/></Field></Row>
+        {mem.coherenceTypical&&<Info>{mem.name} · typical: {mem.coherenceTypical} · λ {mem.wl}</Info>}
+      </>}
+      <SH>Local Qubit Circuit</SH>
+      <CircuitMini node={node} onUpdate={onUpdate}/>
+      <button onClick={onDelete} style={S.dangerBtn}>Delete Node</button>
+    </div>
+  );
+}
+
+// ── Link properties panel ─────────────────────────────────────
+function LinkProps({link,nodes,onUpdate,onDelete}){
+  const fiber=FIBERS.find(f=>f.id===link.fiberId)||FIBERS[0];
+  const wlOpts=fiber.wl.map(w=>w.nm);
+  const wlData=fiber.wl.find(w=>w.nm===link.wavelengthNm)||fiber.wl[0];
+  const m=computeLink(link);
+  const conn=CONNECTORS.find(c=>c.id===link.connectorId)||CONNECTORS[0];
+  const src=nodes.find(n=>n.id===link.source),tgt=nodes.find(n=>n.id===link.target);
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
+      <div style={{fontSize:'11px',fontWeight:700,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.08em'}}>Quantum Channel</div>
+      {src&&tgt&&<Info>{src.name} ⟶ {tgt.name}</Info>}
+      <SH>Fiber Specification</SH>
+      <Field label="ITU Standard / Fiber Type">
+        <select value={link.fiberId} onChange={e=>{const f=FIBERS.find(x=>x.id===e.target.value)||FIBERS[0];onUpdate({fiberId:e.target.value,wavelengthNm:f.wl[0].nm});}}>
+          {FIBERS.map(f=><option key={f.id} value={f.id}>{f.name}</option>)}
+        </select>
+      </Field>
+      <Info style={{color:'#4a7090'}}>{fiber.std} · {fiber.mode} · {fiber.core}<br/>{fiber.desc}</Info>
+      <Row>
+        <Field label="Wavelength (nm)" style={{flex:1}}>
+          <select value={link.wavelengthNm} onChange={e=>onUpdate({wavelengthNm:+e.target.value})}>
+            {wlOpts.map(nm=><option key={nm} value={nm}>{nm} nm</option>)}
+          </select>
+        </Field>
+        <Field label="Length (km)" style={{flex:1}}><input type="number" value={link.lengthKm} onChange={e=>onUpdate({lengthKm:+e.target.value})} min=".001" step=".5"/></Field>
+      </Row>
+      <Field label={`Attenuation α dB/km  ${link.useCustomAlpha?'[custom]':'[auto: '+wlData?.alpha+']'}`}>
+        <div style={{display:'flex',gap:'5px'}}>
+          <input type="number" value={link.useCustomAlpha?link.customAlpha:wlData?.alpha??0.20} onChange={e=>onUpdate({customAlpha:+e.target.value,useCustomAlpha:true})} step=".01" min=".01" style={{flex:1}}/>
+          <button style={S.tinyBtn} onClick={()=>onUpdate({useCustomAlpha:!link.useCustomAlpha})}>{link.useCustomAlpha?'Auto':'Edit'}</button>
+        </div>
+      </Field>
+      <Row>
+        <Field label="Dispersion D" style={{flex:1}}><ReadOnly>{m.dispD} ps/nm·km</ReadOnly></Field>
+        <Field label="PMD" style={{flex:1}}><ReadOnly>{m.pmd.toFixed(3)} ps</ReadOnly></Field>
+      </Row>
+      <SH>Connectors & Splices</SH>
+      <Field label="Connector Type">
+        <select value={link.connectorId} onChange={e=>onUpdate({connectorId:e.target.value,useCustomConnLoss:false})}>
+          {CONNECTORS.map(c=><option key={c.id} value={c.id}>{c.name} ({c.loss} dB)</option>)}
+        </select>
+      </Field>
+      <Info style={{color:'#4a7090'}}>{conn.desc}</Info>
+      <Row>
+        <Field label="# Connectors" style={{flex:1}}><input type="number" value={link.numConnectors} onChange={e=>onUpdate({numConnectors:+e.target.value})} min="0" step="1"/></Field>
+        <Field label="Loss/conn (dB)" style={{flex:1}}>
+          <div style={{display:'flex',gap:'4px'}}>
+            <input type="number" value={link.useCustomConnLoss?link.customConnLoss:conn.loss} onChange={e=>onUpdate({customConnLoss:+e.target.value,useCustomConnLoss:true})} step=".01" min="0" style={{flex:1}}/>
+            {link.useCustomConnLoss&&<button style={S.tinyBtn} onClick={()=>onUpdate({useCustomConnLoss:false})}>Auto</button>}
+          </div>
+        </Field>
+      </Row>
+      <Row>
+        <Field label="# Splices" style={{flex:1}}><input type="number" value={link.numSplices} onChange={e=>onUpdate({numSplices:+e.target.value})} min="0" step="1"/></Field>
+        <Field label="Loss/splice (dB)" style={{flex:1}}><input type="number" value={link.spliceLossDb} onChange={e=>onUpdate({spliceLossDb:+e.target.value})} step=".005" min="0"/></Field>
+      </Row>
+      <SH>Computed Metrics</SH>
+      <div style={{background:'#040b16',border:'1px solid #0d2035',borderRadius:'6px',padding:'10px 12px',display:'grid',gridTemplateColumns:'1fr 1fr',gap:'8px 12px'}}>
+        <Metric label="Fiber Loss" value={`${m.fiberLoss.toFixed(3)} dB`}/>
+        <Metric label="Connector Loss" value={`${m.connLossTotal.toFixed(3)} dB`}/>
+        <Metric label="Splice Loss" value={`${m.spliceLossTotal.toFixed(3)} dB`}/>
+        <Metric label="Total Loss" value={`${m.totalLoss.toFixed(3)} dB`} hi/>
+        <Metric label="Transmission T" value={`${(m.T*100).toFixed(4)}%`}/>
+        <Metric label="Channel Fidelity" value={fidelityLabel(m.fidelity)} color={fidelityColor(m.fidelity)}/>
+      </div>
+      <button onClick={onDelete} style={S.dangerBtn}>Delete Link</button>
+    </div>
+  );
+}
+
+// ── Simulation panel ──────────────────────────────────────────
+function SimPanel({nodes,links,onSimResult,onSimPath}){
+  const[srcId,setSrcId]=useState('');
+  const[dstId,setDstId]=useState('');
+  const[result,setResult]=useState(null);
+  const[error,setError]=useState('');
+
+  function run(){
+    setError('');setResult(null);onSimResult(null);onSimPath(null);
+    if(!srcId||!dstId){setError('Select source and destination.');return;}
+    if(srcId===dstId){setError('Source and destination must differ.');return;}
+    const path=findPath(srcId,dstId,nodes,links);
+    if(!path){setError('No path found between these nodes.');return;}
+    const res=simulatePath(path,nodes,links);
+    setResult(res);onSimResult(res);onSimPath(path);
+  }
+
+  const prob0=result?Math.cos(result.theta/2)**2:null;
+
+  return(
+    <div style={{borderTop:'1px solid #0d1e33',padding:'12px 14px',display:'flex',flexDirection:'column',gap:'8px'}}>
+      <div style={{fontSize:'10px',fontWeight:700,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.1em'}}>⟳ Path Simulation</div>
+      <Row>
+        <Field label="Source" style={{flex:1}}>
+          <select value={srcId} onChange={e=>setSrcId(e.target.value)}>
+            <option value="">— select —</option>
+            {nodes.map(n=><option key={n.id} value={n.id}>{n.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Destination" style={{flex:1}}>
+          <select value={dstId} onChange={e=>setDstId(e.target.value)}>
+            <option value="">— select —</option>
+            {nodes.map(n=><option key={n.id} value={n.id}>{n.name}</option>)}
+          </select>
+        </Field>
+      </Row>
+      <button onClick={run} style={{...S.actionBtn,background:'#0c2240',borderColor:'#1a4a7a',color:'#38bdf8',fontWeight:700}}>Simulate Path ▶</button>
+      {error&&<div style={{fontSize:'11px',color:'#f87171'}}>{error}</div>}
+      {result&&(
+        <div style={{display:'flex',flexDirection:'column',gap:'8px'}}>
+          <div style={{display:'flex',gap:'10px',alignItems:'center',background:'#040b16',border:'1px solid #0d2035',borderRadius:'6px',padding:'10px'}}>
+            <BlochSVG theta={result.theta} phi={result.phi} purity={result.purity} size={68}/>
+            <div style={{fontFamily:'monospace',fontSize:'11px',color:'#a5f3fc',lineHeight:'2'}}>
+              <strong style={{color:'#38bdf8'}}>Final State</strong><br/>
+              θ = {(result.theta*180/PI).toFixed(2)}°<br/>
+              φ = {(result.phi*180/PI).toFixed(2)}°<br/>
+              Purity r = {result.purity.toFixed(4)}<br/>
+              P(|0⟩) ≈ {(prob0*100).toFixed(2)}%
+            </div>
+          </div>
+          <div style={{fontSize:'9px',fontWeight:700,color:'#2d5070',textTransform:'uppercase',letterSpacing:'.1em'}}>Step-by-step</div>
+          {result.steps.map((step,i)=>(
+            <div key={i} style={{background:step.type==='link'?'#040b16':'#061528',border:`1px solid ${step.type==='link'?'#0d2035':'#0d3055'}`,borderRadius:'5px',padding:'6px 10px',fontSize:'10px',fontFamily:'monospace',lineHeight:'1.7'}}>
+              {step.type==='link'?(
+                <span style={{color:'#facc15'}}>⟶ {step.label}</span>
+              ):(
+                <span style={{color:'#a5f3fc'}}>◉ {step.label}<br/>
+                  <span style={{color:'#4a7090'}}>θ={( step.theta*180/PI).toFixed(1)}° φ={( step.phi*180/PI).toFixed(1)}° r={step.purity.toFixed(3)}</span>
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Small shared UI ───────────────────────────────────────────
+function Field({label,children,style}){return<div style={style}><label>{label}</label>{children}</div>;}
+function Row({children}){return<div style={{display:'flex',gap:'8px'}}>{children}</div>;}
+function Info({children,style}){return<div style={{fontSize:'10px',color:'#3d5570',lineHeight:'1.6',...style}}>{children}</div>;}
+function SH({children}){return<div style={{fontSize:'9px',fontWeight:700,color:'#2d5070',textTransform:'uppercase',letterSpacing:'.12em',marginTop:'4px',borderTop:'1px solid #0d2035',paddingTop:'8px'}}>{children}</div>;}
+function Metric({label,value,hi,color}){return<div><div style={{fontSize:'9px',color:'#2d5070',marginBottom:'2px'}}>{label}</div><div style={{fontFamily:'monospace',fontSize:'12px',fontWeight:hi?700:400,color:color||(hi?'#a5f3fc':'#7dd3fc')}}>{value}</div></div>;}
+function ReadOnly({children}){return<div style={{fontFamily:'monospace',fontSize:'12px',color:'#7dd3fc',padding:'4px 8px',background:'#0d1e33',borderRadius:'4px',border:'1px solid #1a3050'}}>{children}</div>;}
+function Summary({nodes,links}){
+  const avg=links.length>0?links.reduce((s,l)=>s+computeLink(l).fidelity,0)/links.length:null;
+  return(
+    <div style={{padding:'10px 14px',borderTop:'1px solid #0d1e33'}}>
+      <div style={{fontSize:'9px',fontWeight:700,color:'#2d5070',textTransform:'uppercase',letterSpacing:'.1em',marginBottom:'7px'}}>Network</div>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'5px'}}>
+        <Metric label="Nodes" value={nodes.length}/>
+        <Metric label="Links" value={links.length}/>
+        {avg!==null&&<Metric label="Avg Fidelity" value={fidelityLabel(avg)} color={fidelityColor(avg)}/>}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ── APP ────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+function App(){
+  const[nodes,setNodes]=useState([
+    {id:'n1',type:'building',  x:160,y:200,name:'HQ Office',    memory:'nv',  coherenceMs:5,  gateFidelity:98, circuit:['H'],      theta:PI/2,phi:0},
+    {id:'n2',type:'repeater', x:380,y:280,name:'Repeater A',   memory:'afc', coherenceMs:6000,gateFidelity:99,circuit:['H','S†'], theta:PI/2,phi:3*PI/2},
+    {id:'n3',type:'datacenter',x:600,y:200,name:'Quantum DC',   memory:'ion', coherenceMs:50000,gateFidelity:99.5,circuit:[],      theta:0,   phi:0},
+    {id:'n4',type:'endpoint',  x:380,y:420,name:'Branch Office',memory:'none',coherenceMs:10,  gateFidelity:97, circuit:['X'],     theta:PI,  phi:0},
+  ]);
+  const[links,setLinks]=useState([
+    {...newLink('n1','n2'),lengthKm:15,fiberId:'G652D', wavelengthNm:1550,numConnectors:2,numSplices:6, spliceLossDb:.05},
+    {...newLink('n2','n3'),lengthKm:28,fiberId:'G654E', wavelengthNm:1550,numConnectors:2,numSplices:12,spliceLossDb:.04},
+    {...newLink('n2','n4'),lengthKm:8, fiberId:'G657A2',wavelengthNm:1310,numConnectors:4,numSplices:2, spliceLossDb:.06},
+  ]);
+  const[mode,setMode]=useState('select');
+  const[addNodeType,setAddNodeType]=useState('building');
+  const[selId,setSelId]=useState(null);
+  const[linkStart,setLinkStart]=useState(null);
+  const[simResult,setSimResult]=useState(null);
+  const[simPath,setSimPath]=useState(null);
+
+  const selNode=nodes.find(n=>n.id===selId)||null;
+  const selLink=links.find(l=>l.id===selId)||null;
+
+  function selectNode(id){setSelId(id);setLinkStart(null);}
+  function selectLink(id){setSelId(id);setLinkStart(null);}
+  function deselect(){setSelId(null);setLinkStart(null);}
+  function placeNode(type,x,y){const n=newNode(type,x,y);setNodes(ns=>[...ns,n]);setSelId(n.id);}
+  function moveNode(id,x,y){setNodes(ns=>ns.map(n=>n.id===id?{...n,x,y}:n));}
+  function updateNode(upd){setNodes(ns=>ns.map(n=>n.id===selId?{...n,...upd}:n));}
+  function deleteNode(){setLinks(ls=>ls.filter(l=>l.source!==selId&&l.target!==selId));setNodes(ns=>ns.filter(n=>n.id!==selId));setSelId(null);}
+  function startLink(id){setLinkStart(id);}
+  function completeLink(id){
+    if(linkStart&&id&&linkStart!==id){
+      const exists=links.some(l=>(l.source===linkStart&&l.target===id)||(l.source===id&&l.target===linkStart));
+      if(!exists){const l=newLink(linkStart,id);setLinks(ls=>[...ls,l]);setSelId(l.id);}
+    }
+    setLinkStart(null);
+  }
+  function updateLink(upd){setLinks(ls=>ls.map(l=>l.id===selId?{...l,...upd}:l));}
+  function deleteLink(){setLinks(ls=>ls.filter(l=>l.id!==selId));setSelId(null);}
+
+  useEffect(()=>{
+    function onKey(e){if((e.key==='Delete'||e.key==='Backspace')&&selId){if(selNode)deleteNode();else if(selLink)deleteLink();}}
+    window.addEventListener('keydown',onKey);return()=>window.removeEventListener('keydown',onKey);
+  },[selId,selNode,selLink]);
+
+  const modeBtn=(m,icon,title)=>(
+    <button onClick={()=>{setMode(m);setLinkStart(null);}} title={title}
+      style={{...S.toolBtn,background:mode===m?'#0c2240':'#040b16',borderColor:mode===m?'#38bdf8':'#1a3050',color:mode===m?'#38bdf8':'#4a7090'}}>
+      {icon}
+    </button>
+  );
+
+  return(
+    <div style={{display:'flex',height:'100vh',overflow:'hidden'}}>
+      {/* Canvas */}
+      <div style={{flex:1,display:'flex',flexDirection:'column',minWidth:0}}>
+        {/* Toolbar */}
+        <div style={{display:'flex',alignItems:'center',gap:'5px',padding:'7px 10px',background:'#060e1a',borderBottom:'1px solid #0d1e33',flexWrap:'wrap'}}>
+          <span style={{fontSize:'13px',fontWeight:700,color:'#38bdf8',marginRight:'6px'}}>⬡ Quantum Network</span>
+          {modeBtn('select','↖ Select','Select & drag nodes')}
+          {modeBtn('addLink','⟋ Link','Draw quantum channel')}
+          {modeBtn('delete','⌫ Delete','Delete selected (Del key)')}
+          <div style={{width:'1px',height:'18px',background:'#1a3050',margin:'0 3px'}}/>
+          <span style={{fontSize:'10px',color:'#3d5570'}}>Add:</span>
+          {NODE_TYPES.map(t=>(
+            <button key={t.id} onClick={()=>{setMode('addNode');setAddNodeType(t.id);}} title={`Place ${t.label}`}
+              style={{...S.toolBtn,borderColor:mode==='addNode'&&addNodeType===t.id?t.color:'#1a3050',color:mode==='addNode'&&addNodeType===t.id?t.color:'#4a7090',background:mode==='addNode'&&addNodeType===t.id?t.color+'22':'#040b16'}}>
+              {t.icon} {t.label}
+            </button>
+          ))}
+          <div style={{marginLeft:'auto',fontSize:'9px',color:'#1a3050'}}>Click to place · drag to move · Del to delete · click link/node to edit</div>
+        </div>
+        {/* Canvas */}
+        <div style={{flex:1,position:'relative'}}>
+          <NetworkCanvas nodes={nodes} links={links} selId={selId} linkStart={linkStart}
+            mode={mode} addNodeType={addNodeType}
+            onSelectNode={selectNode} onSelectLink={selectLink}
+            onPlaceNode={placeNode} onStartLink={startLink} onCompleteLink={completeLink}
+            onMoveNode={moveNode} onDeselect={deselect}
+            simResult={simResult} simPath={simPath}/>
+          {/* Legend */}
+          <div style={{position:'absolute',bottom:'10px',left:'10px',background:'#060e1a99',border:'1px solid #0d2035',borderRadius:'6px',padding:'8px 10px',backdropFilter:'blur(4px)',display:'flex',flexDirection:'column',gap:'4px'}}>
+            <div style={{fontSize:'8px',color:'#2d5070',textTransform:'uppercase',letterSpacing:'.08em',marginBottom:'2px'}}>Fidelity</div>
+            {[['> 90%','#22c55e'],['70–90%','#eab308'],['40–70%','#f97316'],['< 40%','#ef4444']].map(([l,c])=>(
+              <div key={l} style={{display:'flex',alignItems:'center',gap:'5px',fontSize:'10px',color:'#94a3b8'}}>
+                <div style={{width:'16px',height:'2px',background:c,borderRadius:'2px'}}/>{l}
+              </div>
+            ))}
+            <div style={{borderTop:'1px solid #0d2035',marginTop:'4px',paddingTop:'4px',fontSize:'8px',color:'#2d5070'}}>
+              Mini sphere = local qubit state<br/>Dots above = gates in circuit
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Right panel */}
+      <div style={{width:'350px',flexShrink:0,background:'#060e1a',borderLeft:'1px solid #0d1e33',display:'flex',flexDirection:'column',overflow:'hidden'}}>
+        <div style={{flex:1,overflowY:'auto',padding:'14px'}}>
+          {selNode&&(
+            <>
+              <div style={S.panelHead}>Node Properties</div>
+              <NodeProps node={selNode} onUpdate={updateNode} onDelete={deleteNode}/>
+            </>
+          )}
+          {selLink&&(
+            <>
+              <div style={S.panelHead}>Link Properties</div>
+              <LinkProps link={selLink} nodes={nodes} onUpdate={updateLink} onDelete={deleteLink}/>
+            </>
+          )}
+          {!selNode&&!selLink&&(
+            <div style={{color:'#253545',fontSize:'11px',lineHeight:'2',padding:'4px 0'}}>
+              <div style={{color:'#38bdf8',fontWeight:700,fontSize:'12px',marginBottom:'6px'}}>Getting Started</div>
+              <p>↖ <strong style={{color:'#e2e8f0'}}>Select</strong> — click a node or link to edit it. Drag nodes to rearrange.</p>
+              <p>⟋ <strong style={{color:'#e2e8f0'}}>Link</strong> — click source node, then destination to draw a fiber channel.</p>
+              <p>🏢🖥⬡◉ — click an Add button then click the canvas to place a node.</p>
+              <div style={{color:'#7dd3fc',fontWeight:700,fontSize:'11px',margin:'10px 0 4px'}}>Circuits & Gates</div>
+              <p>Each node has its own qubit and circuit. Click a node and use the <strong style={{color:'#e2e8f0'}}>Circuit Builder</strong> to add gate operations. Click <strong style={{color:'#38bdf8'}}>▶ Apply Circuit</strong> to run the gates and update the qubit state — visible as the mini Bloch sphere above each node.</p>
+              <div style={{color:'#f59e0b',fontWeight:700,fontSize:'11px',margin:'10px 0 4px'}}>Path Simulation</div>
+              <p>Use the panel below to simulate a quantum state travelling end-to-end through the network, with decoherence from each fiber segment and gate operations at each node.</p>
+            </div>
+          )}
+        </div>
+        <Summary nodes={nodes} links={links}/>
+        <SimPanel nodes={nodes} links={links} onSimResult={setSimResult} onSimPath={setSimPath}/>
+      </div>
+    </div>
+  );
+}
+
+const S={
+  toolBtn:{background:'#040b16',border:'1px solid #1a3050',color:'#4a7090',padding:'4px 9px',borderRadius:'5px',fontSize:'11px',fontFamily:'monospace'},
+  panelHead:{fontSize:'10px',fontWeight:700,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.1em',marginBottom:'12px',paddingBottom:'8px',borderBottom:'1px solid #0d2035'},
+  dangerBtn:{background:'#1a0808',border:'1px solid #5a1a1a',color:'#f87171',padding:'6px 12px',borderRadius:'5px',fontSize:'12px',width:'100%',marginTop:'4px'},
+  tinyBtn:{background:'#0d1e33',border:'1px solid #1a3050',color:'#4a7090',padding:'2px 6px',borderRadius:'3px',fontSize:'10px',cursor:'pointer',whiteSpace:'nowrap'},
+  actionBtn:{background:'#040b16',border:'1px solid #1a3050',color:'#7dd3fc',padding:'6px 12px',borderRadius:'5px',fontSize:'12px',fontFamily:'monospace',cursor:'pointer'},
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>

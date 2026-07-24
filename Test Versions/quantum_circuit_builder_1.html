@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quantum Circuit Builder</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'JetBrains Mono','Fira Code','Consolas',monospace;
+  background: #080b14; color: #e2e8f0;
+  padding: 22px 24px; min-height: 100vh;
+}
+
+.eyebrow { font-size: 9px; color: #3b82f6; letter-spacing: 4px; text-transform: uppercase; margin-bottom: 4px; }
+.title   { font-size: 21px; font-weight: 800; letter-spacing: -.5px; margin-bottom: 4px; }
+.subtitle{ font-size: 10px; color: #475569; margin-bottom: 18px; }
+
+/* ── Toolbar ─────────────────────────────────────── */
+.toolbar {
+  background: #0d1426; border: 1px solid #1e2d5e; border-radius: 10px;
+  padding: 10px 14px; margin-bottom: 10px;
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+.gate-btn {
+  width: 40px; height: 34px; border-radius: 5px;
+  border: 2px solid #1e2d5e; background: transparent;
+  color: #475569; font-size: 12px; font-weight: 700;
+  cursor: grab; font-family: inherit; transition: all .12s;
+  user-select: none;
+}
+.gate-btn:active { cursor: grabbing; }
+.gate-btn.sel { box-shadow: 0 0 10px var(--gc)55; }
+.vdiv { width: 1px; height: 24px; background: #1e2d5e; margin: 0 3px; flex-shrink: 0; }
+.gate-name { font-size: 11px; font-weight: 600; min-width: 120px; }
+.rgroup { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.xs-lbl { font-size: 9px; color: #334155; flex-shrink: 0; }
+.sm-btn {
+  padding: 4px 9px; border-radius: 4px; border: 1px solid #1e2d5e;
+  background: transparent; color: #64748b; font-size: 10px;
+  cursor: pointer; font-family: inherit;
+}
+.sm-btn:hover { border-color: #3b82f644; color: #94a3b8; }
+.q-btn {
+  width: 26px; height: 26px; border-radius: 4px; border: 1px solid #1e2d5e;
+  background: transparent; color: #475569; font-size: 11px; font-weight: 600;
+  cursor: pointer; font-family: inherit;
+}
+.q-btn.on { border-color: #3b82f6; color: #3b82f6; background: #3b82f618; }
+
+/* ── Hints ───────────────────────────────────────── */
+.hint {
+  display: none; margin-bottom: 10px; padding: 7px 14px;
+  border-radius: 6px; font-size: 10px;
+}
+.hint.cnot  { background: #f9731610; border: 1px solid #f9731630; color: #f97316; }
+.hint.conn  { background: #7c3aed15; border: 1px solid #7c3aed44; color: #a78bfa; }
+
+/* ── Circuit ─────────────────────────────────────── */
+.circuit-wrap {
+  background: #0d1426; border: 1px solid #1e2d5e; border-radius: 12px;
+  padding: 18px 20px; margin-bottom: 12px; overflow-x: auto;
+}
+.step-row { display: flex; margin-left: 40px; margin-bottom: 10px; }
+.step-lbl { text-align: center; font-size: 8px; color: #1e3a5f; font-weight: 600; flex-shrink: 0; }
+.q-row    { display: flex; align-items: center; }
+.q-lbl    { width: 30px; font-size: 11px; font-weight: 700; color: #3b82f6; text-align: right; margin-right: 8px; flex-shrink: 0; }
+.wire-track { display: flex; align-items: center; position: relative; flex: 1; overflow: visible; }
+.wire-line  {
+  position: absolute; left: 0; right: 4px; height: 2px;
+  background: linear-gradient(90deg,#0f1f3d,#1d4ed844,#0f1f3d);
+  top: 50%; transform: translateY(-50%); z-index: 0; pointer-events: none;
+}
+.cell-wrap  { position: relative; flex-shrink: 0; z-index: 1; overflow: visible; }
+.cell {
+  width: 36px; height: 36px; border-radius: 6px;
+  border: 2px dashed #1e2d5e55; background: transparent; color: transparent;
+  font-size: 12px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  position: relative; z-index: 2; font-family: inherit;
+  transition: border-color .1s, background .1s, box-shadow .1s;
+  user-select: none;
+}
+/* Drop target hover */
+.cell.drop-ok   { border-color: #3b82f688 !important; border-style: solid !important; background: #3b82f618 !important; }
+.cell.drop-cnot { border-color: #f9731688 !important; border-style: solid !important; background: #f9731618 !important; }
+.cell.drop-bad  { border-color: #f43f5e33 !important; }
+
+/* Placed gates */
+.cell.placed { border-style: solid; cursor: grab; }
+.cell.placed:active { cursor: grabbing; }
+.cell.pending-ctrl { animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse {
+  0%,100% { box-shadow: 0 0 6px var(--gc)55; }
+  50%      { box-shadow: 0 0 16px var(--gc)99; }
+}
+
+/* CNOT vertical line */
+.cnot-vline {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  width: 2px; pointer-events: none; z-index: 1;
+}
+/* Same-column highlight when connecting CNOT */
+.cell.cnot-col-target { border-style: dashed !important; border-color: #f9731644 !important; background: #f9731608 !important; }
+
+.measure-sym { margin-left: 10px; font-size: 11px; color: #34d39966; flex-shrink: 0; }
+
+/* ── Trash zone ──────────────────────────────────── */
+.trash-zone {
+  display: flex; align-items: center; justify-content: center;
+  gap: 10px; border-radius: 8px;
+  border: 2px dashed #1e2d5e44; padding: 10px;
+  margin-bottom: 12px; font-size: 11px; color: #334155;
+  transition: all .2s; opacity: 0; pointer-events: none;
+}
+.trash-zone.visible { opacity: 1; pointer-events: all; }
+.trash-zone.hover-trash { border-color: #f43f5e99; background: #f43f5e12; color: #f43f5e; }
+
+/* ── Probabilities ───────────────────────────────── */
+.prob-wrap {
+  background: #0d1426; border: 1px solid #1e2d5e; border-radius: 12px;
+  padding: 18px 20px;
+}
+.prob-head { font-size: 9px; color: #3b82f6; letter-spacing: 3px; text-transform: uppercase; margin-bottom: 14px; }
+.prob-row  { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.prob-lbl  { font-size: 11px; font-weight: 600; flex-shrink: 0; width: 56px; }
+.bar-bg    { flex: 1; height: 22px; background: #060a12; border-radius: 4px; overflow: hidden; position: relative; }
+.bar-fill  {
+  height: 100%; border-radius: 4px;
+  background: linear-gradient(90deg,#1d4ed8,#7c3aed);
+  transition: width .35s cubic-bezier(.4,0,.2,1);
+  display: flex; align-items: center; padding-left: 6px; box-sizing: border-box;
+}
+.bar-pct-in  { font-size: 9px; color: #fff; font-weight: 700; white-space: nowrap; }
+.bar-pct-out { position: absolute; left: 6px; top: 0; bottom: 0; display: flex; align-items: center; font-size: 9px; }
+.amp-val     { width: 158px; font-size: 9px; text-align: right; flex-shrink: 0; }
+.prob-footer {
+  margin-top: 14px; padding-top: 14px; border-top: 1px solid #0f1f3d;
+  font-size: 10px; color: #334155; display: flex; gap: 20px; flex-wrap: wrap;
+}
+</style>
+</head>
+<body>
+
+<div class="eyebrow">◆ Quantum Circuit Builder</div>
+<div class="title">Interactive Simulator</div>
+<div class="subtitle">Drag gates from the palette onto the circuit wires · Drag gates between cells to move them · Drag to the bin to delete</div>
+
+<div class="toolbar" id="toolbar"></div>
+<div class="hint cnot"  id="hintCnot"></div>
+<div class="hint conn"  id="hintConn"></div>
+
+<div class="circuit-wrap" id="circuitWrap"></div>
+<div class="trash-zone" id="trashZone" ondragover="trashOver(event)" ondragleave="trashLeave(event)" ondrop="trashDrop(event)">
+  🗑 Drop here to remove
+</div>
+<div class="prob-wrap"   id="probWrap"></div>
+
+<script>
+// ─── Dimensions ─────────────────────────────────
+const CSIZE=36, RGAP=16, RSTRIDE=CSIZE+RGAP, CGAP=8, STEPS=7;
+
+// ─── Gate definitions ────────────────────────────
+const GATE_INFO = {
+  H:    {label:'H',  color:'#3b82f6', title:'Hadamard', desc:'Creates superposition'},
+  X:    {label:'X',  color:'#f43f5e', title:'Pauli-X',  desc:'Quantum NOT gate'},
+  Y:    {label:'Y',  color:'#f59e0b', title:'Pauli-Y',  desc:'Y-axis rotation'},
+  Z:    {label:'Z',  color:'#10b981', title:'Pauli-Z',  desc:'Phase flip'},
+  S:    {label:'S',  color:'#06b6d4', title:'S Gate',   desc:'90° phase shift'},
+  T:    {label:'T',  color:'#8b5cf6', title:'T Gate',   desc:'45° phase shift'},
+  CNOT: {label:'CX', color:'#f97316', title:'CNOT',     desc:'Entangle two qubits'},
+};
+
+// ─── App state ───────────────────────────────────
+let nq      = 2;
+let circuit = {};       // "q-s" → { type, target?, control? }
+let selGate = 'H';
+let cnotPend= null;     // { q,s } pending CNOT control waiting for a target
+
+// Drag state
+let drag = null;
+/*
+  { mode:'palette',      gate:'H' }
+  { mode:'cell',         q, s }
+  { mode:'cnot-connect', q, s }   ← dragging from a pending CNOT control
+*/
+
+// ─── Complex math ────────────────────────────────
+const C=(re,im=0)=>({re,im});
+const cadd=(a,b)=>({re:a.re+b.re,im:a.im+b.im});
+const cmul=(a,b)=>({re:a.re*b.re-a.im*b.im,im:a.re*b.im+a.im*b.re});
+const S2=1/Math.sqrt(2);
+const MATS={
+  H:[[C(S2),C(S2)],[C(S2),C(-S2)]],
+  X:[[C(0),C(1)],[C(1),C(0)]],
+  Y:[[C(0),C(0,-1)],[C(0,1),C(0)]],
+  Z:[[C(1),C(0)],[C(0),C(-1)]],
+  S:[[C(1),C(0)],[C(0),C(0,1)]],
+  T:[[C(1),C(0)],[C(0),C(Math.cos(Math.PI/4),Math.sin(Math.PI/4))]],
+};
+function applyGate(sv,n,q,G){
+  const sz=1<<n,out=Array.from({length:sz},()=>C(0)),bit=n-1-q;
+  for(let i=0;i<sz;i++){
+    if((i>>bit)&1) continue;
+    const i0=i,i1=i|(1<<bit);
+    out[i0]=cadd(cmul(G[0][0],sv[i0]),cmul(G[0][1],sv[i1]));
+    out[i1]=cadd(cmul(G[1][0],sv[i0]),cmul(G[1][1],sv[i1]));
+  }
+  return out;
+}
+function applyCNOT(sv,n,ctrl,tgt){
+  const sz=1<<n,cb=n-1-ctrl,tb=n-1-tgt;
+  const out=Array.from({length:sz},()=>C(0));
+  for(let i=0;i<sz;i++) out[((i>>cb)&1)?i^(1<<tb):i]={...sv[i]};
+  return out;
+}
+function simulate(){
+  let sv=Array.from({length:1<<nq},(_,i)=>C(i===0?1:0));
+  for(let s=0;s<STEPS;s++){
+    const done=new Set();
+    for(let q=0;q<nq;q++){
+      const g=circuit[`${q}-${s}`];
+      if(g?.type==='CNOT_CONTROL'&&g.target!=null&&!done.has(q)){
+        sv=applyCNOT(sv,nq,q,g.target); done.add(q); done.add(g.target);
+      }
+    }
+    for(let q=0;q<nq;q++){
+      if(done.has(q)) continue;
+      const g=circuit[`${q}-${s}`];
+      if(g&&MATS[g.type]) sv=applyGate(sv,nq,q,MATS[g.type]);
+    }
+  }
+  return sv;
+}
+
+// ─── Presets ─────────────────────────────────────
+function preset(name){
+  const ps={
+    bell:{ nq:2, c:{'0-0':{type:'H'},'0-1':{type:'CNOT_CONTROL',target:1},'1-1':{type:'CNOT_TARGET',control:0}} },
+    ghz: { nq:3, c:{
+      '0-0':{type:'H'},
+      '0-1':{type:'CNOT_CONTROL',target:1},'1-1':{type:'CNOT_TARGET',control:0},
+      '1-2':{type:'CNOT_CONTROL',target:2},'2-2':{type:'CNOT_TARGET',control:1},
+    }},
+    hAll:{ nq, c:(()=>{const r={};for(let q=0;q<nq;q++)r[`${q}-0`]={type:'H'};return r;})() },
+    qft2:{ nq:2, c:{
+      '0-0':{type:'H'},'0-1':{type:'S'},'0-2':{type:'T'},
+      '1-3':{type:'H'},
+    }},
+  };
+  const p=ps[name]; if(!p) return;
+  nq=p.nq; circuit={...p.c}; cnotPend=null; render();
+}
+
+// ─── Circuit helpers ──────────────────────────────
+function clearAt(q,s){
+  const key=`${q}-${s}`, g=circuit[key]; if(!g) return;
+  if(g.type==='CNOT_CONTROL'&&g.target!=null) delete circuit[`${g.target}-${s}`];
+  if(g.type==='CNOT_TARGET') delete circuit[`${g.control}-${s}`];
+  if(cnotPend?.q===q&&cnotPend?.s===s) cnotPend=null;
+  delete circuit[key];
+}
+
+// ─── Drag handlers: PALETTE ───────────────────────
+function palDragStart(e,gate){
+  drag={mode:'palette',gate};
+  e.dataTransfer.effectAllowed='copy';
+  e.dataTransfer.setData('text/plain',gate);
+  showTrash(false);
+}
+
+// ─── Drag handlers: CELLS ─────────────────────────
+function cellDragStart(e,q,s){
+  const g=circuit[`${q}-${s}`]; if(!g){e.preventDefault();return;}
+  if(g.type==='CNOT_CONTROL'&&g.target==null){
+    // Pending control → enter connect mode
+    drag={mode:'cnot-connect',q,s};
+    e.dataTransfer.effectAllowed='link';
+    // Highlight same-column cells
+    setTimeout(()=>highlightCnotColumn(s,q),0);
+  } else {
+    drag={mode:'cell',q,s};
+    e.dataTransfer.effectAllowed='move';
+    showTrash(true);
+  }
+  e.dataTransfer.setData('text/plain',g.type);
+}
+
+function cellDragOver(e,q,s){
+  e.preventDefault();
+  clearCellHighlights();
+  const cell=getCellEl(q,s); if(!cell) return;
+
+  if(drag?.mode==='cnot-connect'){
+    if(drag.s===s&&drag.q!==q){
+      cell.classList.add('drop-cnot');
+      e.dataTransfer.dropEffect='link';
+    } else {
+      e.dataTransfer.dropEffect='none';
+    }
+  } else if(drag){
+    cell.classList.add('drop-ok');
+    e.dataTransfer.dropEffect='copy';
+  }
+}
+
+function cellDragLeave(e,q,s){
+  getCellEl(q,s)?.classList.remove('drop-ok','drop-cnot','drop-bad');
+}
+
+function cellDrop(e,q,s){
+  e.preventDefault();
+  clearCellHighlights();
+  if(!drag){render();return;}
+
+  if(drag.mode==='palette'){
+    if(drag.gate==='CNOT'){
+      clearAt(q,s);
+      circuit[`${q}-${s}`]={type:'CNOT_CONTROL',target:null};
+      cnotPend={q,s};
+    } else {
+      clearAt(q,s);
+      circuit[`${q}-${s}`]={type:drag.gate};
+    }
+  } else if(drag.mode==='cnot-connect'){
+    if(drag.s===s&&drag.q!==q){
+      circuit[`${drag.q}-${s}`].target=q;
+      clearAt(q,s);
+      circuit[`${q}-${s}`]={type:'CNOT_TARGET',control:drag.q};
+      cnotPend=null;
+    }
+    // invalid → keep pending, no change
+  } else if(drag.mode==='cell'){
+    const {q:fq,s:fs}=drag;
+    if(fq===q&&fs===s){drag=null;showTrash(false);render();return;}
+    const old=circuit[`${fq}-${fs}`];
+    clearAt(fq,fs);
+    clearAt(q,s);
+    if(old&&old.type!=='CNOT_TARGET'){
+      if(old.type==='CNOT_CONTROL'){
+        circuit[`${q}-${s}`]={type:'CNOT_CONTROL',target:null};
+        cnotPend={q,s};
+      } else {
+        circuit[`${q}-${s}`]={type:old.type};
+      }
+    }
+  }
+
+  drag=null; showTrash(false); render();
+}
+
+function cellDragEnd(e,q,s){
+  // Fires if drag was canceled (no drop target)
+  clearCellHighlights();
+  drag=null; showTrash(false); render();
+}
+
+// ─── Drag handlers: TRASH ─────────────────────────
+function trashOver(e){
+  e.preventDefault();
+  if(drag?.mode==='cell'||drag?.mode==='cnot-connect'){
+    document.getElementById('trashZone').classList.add('hover-trash');
+  }
+}
+function trashLeave(e){
+  document.getElementById('trashZone').classList.remove('hover-trash');
+}
+function trashDrop(e){
+  e.preventDefault();
+  document.getElementById('trashZone').classList.remove('hover-trash');
+  if(drag?.mode==='cell'||drag?.mode==='cnot-connect'){
+    clearAt(drag.q,drag.s);
+  }
+  drag=null; showTrash(false); render();
+}
+
+// ─── UI helpers ───────────────────────────────────
+function showTrash(v){
+  document.getElementById('trashZone').classList.toggle('visible',v);
+}
+function getCellEl(q,s){
+  return document.querySelector(`[data-cell="${q}-${s}"]`);
+}
+function clearCellHighlights(){
+  document.querySelectorAll('.cell').forEach(el=>{
+    el.classList.remove('drop-ok','drop-cnot','drop-bad','cnot-col-target');
+  });
+}
+function highlightCnotColumn(s,excludeQ){
+  for(let q=0;q<nq;q++){
+    if(q===excludeQ) continue;
+    const el=getCellEl(q,s);
+    if(el&&!el.classList.contains('placed')) el.classList.add('cnot-col-target');
+  }
+}
+
+// ─── Format helpers ───────────────────────────────
+function fmtAmp(a){
+  return `${a.re.toFixed(3)}${a.im>=0?'+':'-'}${Math.abs(a.im).toFixed(3)}i`;
+}
+
+// ─── Render ───────────────────────────────────────
+function renderToolbar(){
+  let h='';
+  for(const[k,info]of Object.entries(GATE_INFO)){
+    const on=selGate===k;
+    const sty=on?`--gc:${info.color};border-color:${info.color};background:${info.color}20;color:${info.color};`
+                 :`--gc:${info.color};`;
+    h+=`<button class="gate-btn${on?' sel':''}" style="${sty}"
+          draggable="true"
+          ondragstart="palDragStart(event,'${k}')"
+          title="${info.title}: ${info.desc}"
+          onclick="selGate='${k}';renderToolbar()"
+        >${info.label}</button>`;
+  }
+  h+=`<div class="vdiv"></div>`;
+  h+=`<span class="gate-name" style="color:${GATE_INFO[selGate].color}">${GATE_INFO[selGate].title}</span>`;
+  h+=`<div class="rgroup">`;
+  h+=`<span class="xs-lbl">PRESET:</span>`;
+  for(const[n,l]of[['bell','Bell'],['ghz','GHZ'],['hAll','H⊗n'],['qft2','QFT']])
+    h+=`<button class="sm-btn" onclick="preset('${n}')">${l}</button>`;
+  h+=`<div class="vdiv"></div><span class="xs-lbl">QUBITS:</span>`;
+  for(const n of[2,3,4])
+    h+=`<button class="q-btn${nq===n?' on':''}" onclick="nq=${n};circuit={};cnotPend=null;render()">${n}</button>`;
+  h+=`<div class="vdiv"></div>`;
+  h+=`<button class="sm-btn" onclick="circuit={};cnotPend=null;render()">Clear</button>`;
+  h+=`</div>`;
+  document.getElementById('toolbar').innerHTML=h;
+}
+
+function renderHints(){
+  const hc=document.getElementById('hintCnot');
+  const hk=document.getElementById('hintConn');
+  if(cnotPend&&circuit[`${cnotPend.q}-${cnotPend.s}`]?.target==null){
+    hc.style.display='none';
+    hk.style.display='block';
+    hk.textContent=`⟳ CNOT control placed at q${cnotPend.q} step ${cnotPend.s+1} — drag the ● to another qubit in the same column to connect the target`;
+  } else if(selGate==='CNOT'&&!cnotPend){
+    hk.style.display='none';
+    hc.style.display='block';
+    hc.textContent='Drag CX from the palette onto a qubit wire to place the control (●), then drag ● to a qubit in the same column for the target (⊕)';
+  } else {
+    hc.style.display='none';
+    hk.style.display='none';
+  }
+}
+
+function renderCircuit(){
+  let h='<div class="step-row">';
+  for(let s=0;s<STEPS;s++)
+    h+=`<div class="step-lbl" style="width:${CSIZE}px;margin-right:${s<STEPS-1?CGAP:0}px">t${s+1}</div>`;
+  h+='</div>';
+
+  for(let q=0;q<nq;q++){
+    h+=`<div class="q-row" style="margin-bottom:${q<nq-1?RGAP:0}px">`;
+    h+=`<div class="q-lbl">q${q}</div>`;
+    h+=`<div class="wire-track"><div class="wire-line"></div>`;
+
+    for(let s=0;s<STEPS;s++){
+      const key=`${q}-${s}`, gate=circuit[key], gt=gate?.type;
+      const isPendCtrl = gt==='CNOT_CONTROL'&&gate.target==null;
+
+      // Gate visuals
+      let text='', clr='transparent', bg='transparent',
+          brd='#1e2d5e55', brdSty='dashed', glow='none', fs=12,
+          placed=false, draggableAttr='', dragHandler='';
+
+      if(gt==='CNOT_CONTROL'){
+        text='●'; clr=GATE_INFO.CNOT.color; bg=`${GATE_INFO.CNOT.color}18`;
+        brd=GATE_INFO.CNOT.color; brdSty='solid'; glow=`0 0 12px ${GATE_INFO.CNOT.color}55`;
+        placed=true; draggableAttr='draggable="true"';
+        dragHandler=`ondragstart="cellDragStart(event,${q},${s})" ondragend="cellDragEnd(event,${q},${s})"`;
+      } else if(gt==='CNOT_TARGET'){
+        text='⊕'; clr=GATE_INFO.CNOT.color; bg=`${GATE_INFO.CNOT.color}12`;
+        brd=`${GATE_INFO.CNOT.color}88`; brdSty='solid'; fs=18;
+        placed=true; draggableAttr='draggable="true"';
+        dragHandler=`ondragstart="cellDragStart(event,${q},${s})" ondragend="cellDragEnd(event,${q},${s})"`;
+      } else if(gt&&GATE_INFO[gt]){
+        const gi=GATE_INFO[gt];
+        text=gi.label; clr=gi.color; bg=`${gi.color}1a`;
+        brd=gi.color; brdSty='solid'; glow=`0 0 12px ${gi.color}55`;
+        placed=true; draggableAttr='draggable="true"';
+        dragHandler=`ondragstart="cellDragStart(event,${q},${s})" ondragend="cellDragEnd(event,${q},${s})"`;
+      }
+
+      const pendClass = isPendCtrl ? ' pending-ctrl' : '';
+      const cellStyle = `--gc:${clr};border-style:${brdSty};border-color:${brd};background:${bg};color:${clr};font-size:${fs}px;box-shadow:${glow};`;
+
+      // CNOT vertical line (only for connected control)
+      let vline='';
+      if(gt==='CNOT_CONTROL'&&gate.target!=null){
+        const tgt=gate.target, lh=Math.abs(tgt-q)*RSTRIDE;
+        const dir=tgt>q?'top:50%':'bottom:50%';
+        vline=`<div class="cnot-vline" style="height:${lh}px;${dir};background:${GATE_INFO.CNOT.color}"></div>`;
+      }
+
+      h+=`<div class="cell-wrap" style="margin-right:${s<STEPS-1?CGAP:0}px">${vline}`;
+      h+=`<div class="cell${placed?' placed':''}${pendClass}"
+               data-cell="${q}-${s}"
+               style="${cellStyle}"
+               ${draggableAttr} ${dragHandler}
+               ondragover="cellDragOver(event,${q},${s})"
+               ondragleave="cellDragLeave(event,${q},${s})"
+               ondrop="cellDrop(event,${q},${s})"
+             >${text}</div>`;
+      h+=`</div>`;
+    }
+
+    h+=`<div class="measure-sym">⊢M</div></div></div>`;
+  }
+
+  document.getElementById('circuitWrap').innerHTML=h;
+}
+
+function renderProbs(){
+  const sv=simulate();
+  const probs=sv.map(a=>a.re*a.re+a.im*a.im);
+  const maxP=Math.max(...probs,1e-9);
+  const nActive=probs.filter(p=>p>1e-5).length;
+  const norm=probs.reduce((s,p)=>s+p,0);
+  const size=1<<nq;
+
+  let h=`<div class="prob-head">Measurement Probabilities</div>`;
+  for(let i=0;i<size;i++){
+    const label='|'+i.toString(2).padStart(nq,'0')+'⟩';
+    const prob=probs[i]||0, pct=prob*100, barW=(prob/maxP)*100, sig=prob>1e-5;
+    const lc=sig?'#94a3b8':'#1e293b', ac=sig?'#475569':'#1e293b';
+    h+=`<div class="prob-row">
+      <div class="prob-lbl" style="color:${lc}">${label}</div>
+      <div class="bar-bg">
+        <div class="bar-fill" style="width:${barW}%;${sig?'':'background:#0d1426'}">
+          ${pct>9?`<span class="bar-pct-in">${pct.toFixed(1)}%</span>`:''}
+        </div>
+        ${pct<=9?`<span class="bar-pct-out" style="color:${sig?'#475569':'#1e293b'}">${pct.toFixed(1)}%</span>`:''}
+      </div>
+      <div class="amp-val" style="color:${ac}">${fmtAmp(sv[i])}</div>
+    </div>`;
+  }
+  const sc=nActive===1?'#34d399':'#7c3aed';
+  const sm=nActive===1?'◉ Pure state — deterministic result':`◉ Superposition — ${nActive} active states`;
+  h+=`<div class="prob-footer"><span style="color:${sc}">${sm}</span><span>Σ|αᵢ|² = ${norm.toFixed(5)}</span></div>`;
+  document.getElementById('probWrap').innerHTML=h;
+}
+
+function render(){
+  renderToolbar();
+  renderHints();
+  renderCircuit();
+  renderProbs();
+}
+
+// Boot
+preset('bell');
+</script>
+</body>
+</html>
